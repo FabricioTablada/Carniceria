@@ -1,0 +1,7 @@
+# Modulo: categories
+# Responsabilidad: Clasificacion de productos.
+#
+# Estructura esperada (patron estandar, ver ARCHITECTURE.md seccion 4):
+#   categories.routes.ts / categories.controller.ts / categories.service.ts / categories.repository.ts / categories.validation.ts / index.ts
+#
+# Pendiente de implementar.

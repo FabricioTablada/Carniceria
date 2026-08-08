@@ -1,0 +1,386 @@
+@baseUrl = http://localhost:3000/api/v1
+
+###############################################################################
+# CARNICERIA POS BACKEND
+# QA - GET /reports/sales-by-category
+#
+# Completamente autocontenido: crea toda su propia categoria/impuesto/
+# producto/caja/sesion/venta, y su propio usuario sin permisos para el
+# caso 403. No depende del estado dejado por ningun otro archivo QA, y
+# puede correrse repetidas veces sin fallar (recursos con sufijo de
+# tiempo via {{$timestamp}}).
+#
+# Cobertura:
+#   1. Sin filtros
+#   2. Filtrando por sucursal
+#   3. Filtrando por rango de fechas
+#   4. Combinando sucursal + fechas
+#   5. Token invalido
+#   6. Sin autenticacion
+#   7. Usuario sin permisos (403)
+#   8. Validacion de parametros invalidos (fechas incorrectas, UUID invalido)
+#   9. Caso sin resultados
+###############################################################################
+
+###############################################################################
+# LOGIN
+###############################################################################
+
+### Login (admin)
+# @name login
+
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "Admin123!"
+}
+
+###############################################################################
+# PREPARACION DE DATOS: categoria, producto, caja, sesion y una venta real
+###############################################################################
+
+### Impuesto dedicado a este QA
+# @name createTax
+
+POST {{baseUrl}}/taxes
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "code": "QA-SBC-{{$timestamp}}",
+  "name": "IVA QA sales-by-category {{$timestamp}}",
+  "rate": 13,
+  "isDefault": false,
+  "active": true
+}
+
+###
+
+### Categoria dedicada a este QA
+# @name createCategory
+
+POST {{baseUrl}}/categories
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "name": "QA sales-by-category {{$timestamp}}",
+  "description": "Categoria dedicada al QA de GET /reports/sales-by-category",
+  "parentId": null,
+  "active": true
+}
+
+###
+
+### Producto dedicado a este QA, dentro de la categoria de arriba
+# @name createProduct
+
+POST {{baseUrl}}/products
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "categoryId": "{{createCategory.response.body.data.id}}",
+  "taxId": "{{createTax.response.body.data.id}}",
+  "sku": "QA-SBC-{{$timestamp}}",
+  "barcode": "QA-SBC-BC-{{$timestamp}}",
+  "name": "Producto QA sales-by-category {{$timestamp}}",
+  "description": "Producto usado para generar una venta real en este QA",
+  "unitOfMeasure": "UNIT",
+  "salePrice": 1000,
+  "cost": 500,
+  "isVariableWeight": false,
+  "trackInventory": false,
+  "active": true
+}
+
+###
+
+### Caja registradora dedicada a este QA
+# @name createCashRegister
+
+POST {{baseUrl}}/cash-registers
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "sucursalId": "00000000-0000-0000-0000-000000000001",
+  "name": "Caja QA sales-by-category",
+  "active": true
+}
+
+###
+
+### Abrir sesion de caja
+# @name openSession
+
+POST {{baseUrl}}/cash/sessions
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "cashRegisterId": "{{createCashRegister.response.body.data.id}}",
+  "openingAmount": 10000,
+  "notes": "QA sales-by-category"
+}
+
+###
+
+### Crear una venta real: 3 unidades x 1000 = 3000, sin impuesto (taxId
+### omitido en el detalle) -> queda un total exacto y predecible para
+### verificar la agregacion por categoria.
+# @name createSale
+
+POST {{baseUrl}}/sales
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "cashSessionId": "{{openSession.response.body.data.id}}",
+  "items": [
+    {
+      "productId": "{{createProduct.response.body.data.id}}",
+      "quantity": 3,
+      "unitPrice": 1000
+    }
+  ]
+}
+
+###
+
+### Cerrar la sesion de prueba (limpieza, mismo criterio que los demas QA)
+# @name closeSession
+
+PATCH {{baseUrl}}/cash/sessions/{{openSession.response.body.data.id}}/close
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "closedByUserId": "{{openSession.response.body.data.openedByUserId}}",
+  "closingAmount": 13000,
+  "notes": "QA sales-by-category - cierre"
+}
+
+###############################################################################
+# PREPARACION: usuario con un rol real que NO tiene acceso a reportes
+# (GET /reports/* exige exactamente 'ADMIN' o 'MANAGER', ver
+# authorize.middleware.ts: comparacion de string exacto contra
+# req.user.role). Se busca por nombre en vez de asumir un rol fijo, para
+# no depender de que 'CASHIER'/'MANAGER' existan tal cual estan en
+# prisma/seed.ts -- en este entorno, el segundo rol real es 'Supervisor'.
+###############################################################################
+
+### Buscar un rol real que no sea ADMIN (ya sembrado en el proyecto)
+# @name findNonAdminRole
+
+GET {{baseUrl}}/roles?search=Supervisor
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+###
+
+### Crear un usuario con ese rol, dedicado a este QA
+# @name createNonAdminUser
+
+POST {{baseUrl}}/users
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "sucursalId": "00000000-0000-0000-0000-000000000001",
+  "roleId": "{{findNonAdminRole.response.body.data[0].id}}",
+  "username": "qa.sbc.{{$timestamp}}",
+  "fullName": "QA sin permisos sales-by-category",
+  "password": "QaSinPermisos123!",
+  "active": true
+}
+
+###
+
+### Login con el usuario recien creado. El username se lee directo de la
+### respuesta de createNonAdminUser (POST /users devuelve `username` en
+### su payload, ver users.service.ts -> toUserResponse) en vez de volver
+### a construirlo con {{$timestamp}} -- asi queda garantizado que es
+### exactamente el mismo string que el backend efectivamente persistio,
+### sin depender de que REST Client reevalue una variable dinamica de
+### forma consistente entre dos requests distintos.
+# @name loginNonAdmin
+
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "{{createNonAdminUser.response.body.data.username}}",
+  "password": "QaSinPermisos123!"
+}
+
+###############################################################################
+# 1. SIN FILTROS
+###############################################################################
+
+### Sin ningun filtro -> 200 y forma de respuesta correcta.
+### NOTA: sin filtros, el resultado depende de TODAS las categorias con
+### ventas del sistema (no solo la de este QA), asi que aqui solo se
+### verifica la forma de la respuesta (smoke test) -- los casos 2 y 4 (con
+### filtro de sucursal) si verifican el total exacto de nuestra categoria.
+GET {{baseUrl}}/reports/sales-by-category
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.success === true
+# - body.data es un array (sin body.meta: no es un listado paginado)
+
+###############################################################################
+# 2. FILTRANDO POR SUCURSAL
+###############################################################################
+
+### La sucursal real -> debe incluir la categoria de este QA con sus
+### totales exactos (3 unidades, 3000 de importe, 1 linea de detalle)
+GET {{baseUrl}}/reports/sales-by-category?sucursalId=00000000-0000-0000-0000-000000000001
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - existe un item con categoryId === "{{createCategory.response.body.data.id}}"
+# - ese item tiene totalQuantitySold === 3
+# - ese item tiene totalSalesAmount === 3000
+# - ese item tiene salesCount === 1
+
+###
+
+### sucursalId inexistente -> nuestra categoria no debe aparecer
+GET {{baseUrl}}/reports/sales-by-category?sucursalId=00000000-0000-0000-0000-00000000ffff
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - ningun item de body.data tiene categoryId === "{{createCategory.response.body.data.id}}"
+
+###############################################################################
+# 3. FILTRANDO POR RANGO DE FECHAS
+###############################################################################
+
+### Rango que SI incluye hoy -> debe incluir la categoria de este QA
+GET {{baseUrl}}/reports/sales-by-category?dateFrom=2020-01-01&dateTo=2100-01-01
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - existe un item con categoryId === "{{createCategory.response.body.data.id}}"
+
+###
+
+### Rango que NO incluye hoy (fechas pasadas) -> nuestra categoria no debe aparecer
+GET {{baseUrl}}/reports/sales-by-category?dateFrom=2000-01-01&dateTo=2000-01-31
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - ningun item de body.data tiene categoryId === "{{createCategory.response.body.data.id}}"
+
+###############################################################################
+# 4. COMBINANDO SUCURSAL + FECHAS
+###############################################################################
+
+### Sucursal real + rango amplio -> incluye la categoria de este QA con
+### los mismos totales exactos del caso 2
+GET {{baseUrl}}/reports/sales-by-category?sucursalId=00000000-0000-0000-0000-000000000001&dateFrom=2020-01-01&dateTo=2100-01-01
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - existe un item con categoryId === "{{createCategory.response.body.data.id}}"
+# - ese item tiene totalQuantitySold === 3, totalSalesAmount === 3000, salesCount === 1
+
+###
+
+### Sucursal real + rango que NO incluye hoy -> nuestra categoria no debe aparecer
+GET {{baseUrl}}/reports/sales-by-category?sucursalId=00000000-0000-0000-0000-000000000001&dateFrom=2000-01-01&dateTo=2000-01-31
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - ningun item de body.data tiene categoryId === "{{createCategory.response.body.data.id}}"
+
+###############################################################################
+# 5. TOKEN INVALIDO
+###############################################################################
+
+### Token con formato invalido / no emitido por este backend -> 401
+GET {{baseUrl}}/reports/sales-by-category
+Authorization: Bearer token-invalido-{{$timestamp}}
+
+# Verificar:
+# - HTTP 401
+# - body.success === false
+
+###############################################################################
+# 6. SIN AUTENTICACION
+###############################################################################
+
+### Sin header Authorization -> 401
+GET {{baseUrl}}/reports/sales-by-category
+
+# Verificar:
+# - HTTP 401
+# - body.success === false
+
+###############################################################################
+# 7. USUARIO SIN PERMISOS (403)
+###############################################################################
+
+### Usuario con un rol real que no es ADMIN ni MANAGER (aqui, 'Supervisor') -> 403
+GET {{baseUrl}}/reports/sales-by-category
+Authorization: Bearer {{loginNonAdmin.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 403
+# - body.success === false
+
+###############################################################################
+# 8. VALIDACION DE PARAMETROS INVALIDOS
+###############################################################################
+
+### sucursalId con formato invalido (no UUID) -> 400
+GET {{baseUrl}}/reports/sales-by-category?sucursalId=no-es-un-uuid
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 400
+# - body.success === false
+# - body.error.code === "VALIDATION_ERROR"
+
+###
+
+### dateFrom con formato de fecha invalido -> 400
+GET {{baseUrl}}/reports/sales-by-category?dateFrom=fecha-invalida
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 400
+# - body.success === false
+
+###
+
+### dateTo con formato de fecha invalido -> 400
+GET {{baseUrl}}/reports/sales-by-category?dateTo=31-13-2025
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 400
+# - body.success === false
+
+###############################################################################
+# 9. CASO SIN RESULTADOS
+###############################################################################
+
+### Combinacion sin resultados posibles (sucursal inexistente + rango amplio)
+GET {{baseUrl}}/reports/sales-by-category?sucursalId=00000000-0000-0000-0000-00000000ffff&dateFrom=2020-01-01&dateTo=2100-01-01
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200 (una lista vacia es una respuesta valida, NO un 404)
+# - body.success === true
+# - body.data es exactamente []

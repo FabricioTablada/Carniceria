@@ -1,0 +1,158 @@
+@baseUrl = http://localhost:3000/api/v1
+
+###############################################################################
+# CARNICERIA POS BACKEND
+# BACKEND SETUP
+#
+# Este archivo prepara una base de datos nueva para ejecutar el QA funcional.
+#
+# Ejecutar UNA SOLA VEZ sobre una base limpia.
+#
+# Orden obligatorio:
+# 1. Login
+# 2. Taxes
+# 3. Categories
+# 4. Suppliers
+# 5. Products
+# 6. Cash Register
+###############################################################################
+
+###############################################################################
+# LOGIN
+###############################################################################
+
+### Login
+# @name login
+
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "Admin123!"
+}
+###############################################################################
+# TAXES
+###############################################################################
+
+### Crear impuesto
+# @name createTax
+
+POST {{baseUrl}}/taxes
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "code": "IVA13",
+  "name": "IVA 13%",
+  "rate": 13,
+  "isDefault": true,
+  "active": true
+}
+
+###
+
+### Listar impuestos
+
+GET {{baseUrl}}/taxes
+Authorization: Bearer {{login.response.body.data.accessToken}}
+###############################################################################
+# 03. CATEGORIES
+###############################################################################
+
+### Crear Categoría
+
+POST {{baseUrl}}/categories
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "name": "Carnes",
+  "description": "Categoría principal de carnes",
+  "parentId": null,
+  "active": true
+}
+
+###
+
+### Listar Categorías
+
+GET {{baseUrl}}/categories
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+###############################################################################
+# 04. SUPPLIERS
+###############################################################################
+
+### Crear Proveedor
+
+POST {{baseUrl}}/suppliers
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "name": "Proveedor QA",
+  "legalId": "3-101-999999",
+  "contactName": "Proveedor QA",
+  "phone": "8888-9999",
+  "email": "qa@proveedor.com",
+  "address": "Costa Rica",
+  "active": true
+}
+
+###
+
+### Listar Proveedores
+
+GET {{baseUrl}}/suppliers
+Authorization: Bearer {{login.response.body.data.accessToken}}
+###############################################################################
+# 05. PRODUCTS
+###############################################################################
+
+### Crear Producto
+
+POST {{baseUrl}}/products
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "categoryId": "PEGAR_CATEGORY_ID",
+  "taxId": "PEGAR_TAX_ID",
+  "sku": "CARNE001",
+  "barcode": "750000000001",
+  "name": "Posta de Res",
+  "description": "Posta de Res Premium",
+  "unitOfMeasure": "KILOGRAM",
+  "salePrice": 8500,
+  "cost": 6500,
+  "isVariableWeight": true,
+  "trackInventory": true,
+  "active": true
+}
+
+###
+
+GET {{baseUrl}}/products
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+###############################################################################
+# 06. CASH REGISTER
+###############################################################################
+
+### Crear Caja
+
+POST {{baseUrl}}/cash-registers
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "sucursalId": "00000000-0000-0000-0000-000000000001",
+  "name": "Caja Principal",
+  "active": true
+}
+
+###
+
+GET {{baseUrl}}/cash-registers
+Authorization: Bearer {{login.response.body.data.accessToken}}

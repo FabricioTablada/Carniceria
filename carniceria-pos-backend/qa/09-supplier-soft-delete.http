@@ -1,0 +1,207 @@
+@baseUrl = http://localhost:3000/api/v1
+
+###############################################################################
+# CARNICERIA POS BACKEND
+# QA - Hallazgo 2.1 de auditoria: Soft Delete, modulo piloto Suppliers.
+#
+# OBJETIVO DEL HALLAZGO: `SOFT_DELETE_MODELS` estaba vacio -- ningun modelo
+# del proyecto tenia implementado el borrado logico de punta a punta
+# (escritura + lectura), pese a que la columna `deletedAt` ya existia en
+# el schema desde el diseño original. Se eligio `Supplier` como modulo
+# piloto (menor acoplamiento del sistema: una sola relacion de salida,
+# sin intervenir en ningun calculo de negocio) para validar el patron
+# completo antes de replicarlo a otros modelos.
+#
+# COMPORTAMIENTO ESPERADO:
+#   - DELETE /suppliers/:id marca `deletedAt` (no borra la fila fisica).
+#   - A partir de ahi, la extension global de Prisma (`softDelete.ext.ts`,
+#     con `Supplier` ya registrado en `SOFT_DELETE_MODELS`) excluye
+#     automaticamente esa fila de CUALQUIER `findFirst`/`findMany`/
+#     `count`/`aggregate` sobre `Supplier` -- sin que `suppliers.service.ts`
+#     necesite ninguna consulta especial para lograrlo.
+#   - `remove()` es idempotente por diseño: no distingue "nunca existio"
+#     de "ya fue borrado" (ambos casos dan 404), porque `findById` ya
+#     pasa por ese mismo filtro global.
+#
+# LIMITE EXPLICITO DE ESTE QA: valida EXCLUSIVAMENTE el modulo Suppliers.
+# No crea compras, no toca Purchases ni Reports, y no verifica el
+# comportamiento de `Supplier` cuando aparece anidado en relaciones de
+# otros modulos (eso queda documentado como pendiente para un QA
+# especifico posterior, cuando corresponda extender el patron).
+#
+# Completamente autocontenido: crea su propio proveedor. No depende del
+# estado dejado por ningun otro archivo QA, y puede correrse repetidas
+# veces sin fallar (nombre unico via {{$timestamp}}).
+#
+# Cobertura:
+#   1. Login
+#   2. Crear un proveedor dedicado a este QA
+#   3. GET /suppliers/:id -> confirma que existe (200)
+#   4. DELETE /suppliers/:id
+#   5. Verificar que el DELETE responde 204 No Content, sin body
+#   6. GET /suppliers/:id -> ahora responde 404
+#   7. GET /suppliers (listado) -> el proveedor borrado no aparece
+#   8. DELETE otra vez sobre el mismo id -> 404 (idempotente)
+#   9. DELETE sobre un UUID valido pero jamas existente -> 404
+#  10. Resumen de la evidencia que demuestra el filtrado global
+###############################################################################
+
+###############################################################################
+# 1. LOGIN
+###############################################################################
+
+### Login (admin)
+# @name login
+
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "Admin123!"
+}
+
+###############################################################################
+# 2. CREAR UN PROVEEDOR DEDICADO A ESTE QA
+###############################################################################
+
+### Proveedor de prueba, con nombre unico para poder aislarlo en el
+### listado del caso 7 sin depender de que la base este "limpia"
+# @name createSupplier
+
+POST {{baseUrl}}/suppliers
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "name": "QA Soft Delete Supplier {{$timestamp}}",
+  "legalId": "3-101-{{$timestamp}}",
+  "contactName": "Contacto QA",
+  "phone": "8888-0000",
+  "email": "qa.softdelete.{{$timestamp}}@example.com",
+  "address": "Direccion de prueba QA",
+  "active": true
+}
+
+# Verificar:
+# - HTTP 201
+# - body.success === true
+# - body.data.id existe
+
+###############################################################################
+# 3. CONFIRMAR QUE EXISTE ANTES DE BORRAR
+###############################################################################
+
+### GET /suppliers/:id -> debe existir, 200
+# @name getSupplierBeforeDelete
+
+GET {{baseUrl}}/suppliers/{{createSupplier.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data.id === "{{createSupplier.response.body.data.id}}"
+# - body.data.name === "QA Soft Delete Supplier {{$timestamp}}"
+
+###############################################################################
+# 4-5. EJECUTAR DELETE Y VERIFICAR 204 SIN BODY
+###############################################################################
+
+### DELETE /suppliers/:id -> borrado logico (marca deletedAt, no borra la fila)
+# @name deleteSupplier
+
+DELETE {{baseUrl}}/suppliers/{{createSupplier.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 204 No Content
+# - Sin cuerpo de respuesta (a diferencia de todos los demas endpoints del
+#   proyecto, este NO devuelve { success, data }: un 204 no lleva body)
+
+###############################################################################
+# 6. CONFIRMAR QUE AHORA RESPONDE 404
+###############################################################################
+
+### GET /suppliers/:id -> ya no se encuentra (filtro global de deletedAt)
+GET {{baseUrl}}/suppliers/{{createSupplier.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 404
+# - body.success === false
+
+###############################################################################
+# 7. CONFIRMAR QUE NO APARECE EN EL LISTADO
+###############################################################################
+
+### GET /suppliers?search=... -> el proveedor borrado no debe aparecer,
+### aunque el nombre coincida exactamente con el filtro de busqueda
+GET {{baseUrl}}/suppliers?search=QA Soft Delete Supplier {{$timestamp}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data es un array vacio [] (el filtro de busqueda coincidiria
+#   con el nombre exacto si el proveedor no estuviera borrado -- que el
+#   listado quede vacio aqui es evidencia directa de que el filtro
+#   global de deletedAt esta excluyendolo)
+
+###############################################################################
+# 8. DELETE OTRA VEZ SOBRE EL MISMO ID -> 404 (IDEMPOTENTE)
+###############################################################################
+
+### Segundo DELETE sobre el mismo proveedor ya borrado -> debe dar 404,
+### no un 200 ni un error distinto. Es el comportamiento idempotente
+### esperado: remove() no distingue "nunca existio" de "ya fue borrado".
+DELETE {{baseUrl}}/suppliers/{{createSupplier.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 404
+# - body.success === false
+
+###############################################################################
+# 9. DELETE SOBRE UN UUID VALIDO PERO NUNCA EXISTENTE
+###############################################################################
+
+### UUID con formato valido, pero que nunca correspondio a ningun
+### proveedor real -> mismo 404 que el caso anterior (indistinguibles
+### por diseño, tal como se aprobo en el analisis tecnico)
+DELETE {{baseUrl}}/suppliers/11111111-1111-1111-1111-111111111111
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 404
+# - body.success === false
+
+###############################################################################
+# 10. RESUMEN DE LA EVIDENCIA
+###############################################################################
+#
+# La ejecucion completa de este archivo demuestra, con evidencia directa
+# de la API (no solo de codigo), que el filtrado global por `deletedAt`
+# esta funcionando:
+#
+#   a) El proveedor existia y era accesible por GET antes del DELETE
+#      (caso 3: 200).
+#   b) El DELETE respondio 204, confirmando que el borrado logico se
+#      ejecuto sin error (caso 4-5).
+#   c) Inmediatamente despues, el MISMO id que un momento antes devolvia
+#      200 ahora devuelve 404 -- sin que la fila haya sido borrada
+#      fisicamente (sigue existiendo en la base, solo con `deletedAt`
+#      seteado): es la extension global de Prisma
+#      (`softDelete.ext.ts`) filtrandolo en tiempo real, no un efecto
+#      del propio DELETE (caso 6).
+#   d) El proveedor tampoco aparece en el listado paginado, ni siquiera
+#      buscandolo por su nombre exacto -- confirma que el filtro se
+#      aplica tambien a `findMany`, no solo a `findFirst`/`findById`
+#      (caso 7).
+#   e) Un segundo DELETE sobre el mismo id, y un DELETE sobre un id que
+#      nunca existio, dan exactamente el mismo resultado (404) --
+#      confirma la idempotencia buscada, sin necesidad de ninguna
+#      consulta especial que distinga ambos casos (casos 8 y 9).
+#
+# Lo que este archivo NO prueba (fuera de su alcance, documentado desde
+# el encabezado): el comportamiento de `Supplier` cuando aparece anidado
+# dentro de una compra (`Purchase.supplier`) o de un reporte. Esa
+# verificacion queda pendiente para un QA especifico posterior.

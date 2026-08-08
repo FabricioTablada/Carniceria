@@ -1,0 +1,7 @@
+# Modulo: auth
+# Responsabilidad: Autenticacion: login, emision/validacion de JWT, refresh, hash bcrypt. Separado de users.
+#
+# Estructura esperada (patron estandar, ver ARCHITECTURE.md seccion 4):
+#   auth.routes.ts / auth.controller.ts / auth.service.ts / auth.repository.ts / auth.validation.ts / index.ts
+#
+# Pendiente de implementar.

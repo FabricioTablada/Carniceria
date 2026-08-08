@@ -1,0 +1,192 @@
+@baseUrl = http://localhost:3000/api/v1
+
+###############################################################################
+# CARNICERIA POS BACKEND
+# BACKEND FLOW
+#
+# Ejecutar después de 01-backend-setup.http
+###############################################################################
+
+###############################################################################
+# LOGIN
+###############################################################################
+
+### Login
+# @name login
+
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "Admin123!"
+}
+
+###############################################################################
+# CASH SESSION
+###############################################################################
+
+### Abrir Caja
+
+POST {{baseUrl}}/cash/sessions
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "sucursalId": "00000000-0000-0000-0000-000000000001",
+  "cashRegisterId": "PEGAR_CASH_REGISTER_ID",
+  "openedByUserId": "PEGAR_ADMIN_USER_ID",
+  "openingAmount": 10000,
+  "notes": "QA Backend"
+}
+
+###
+
+GET {{baseUrl}}/cash/sessions
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+###############################################################################
+# PURCHASE
+###############################################################################
+
+### Crear Compra
+
+POST {{baseUrl}}/purchases
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "sucursalId": "00000000-0000-0000-0000-000000000001",
+  "supplierId": "PEGAR_SUPPLIER_ID",
+  "userId": "PEGAR_ADMIN_USER_ID",
+  "documentNumber": "FAC-000001",
+  "status": "RECEIVED",
+  "notes": "Compra QA",
+  "items": [
+    {
+      "productId": "PEGAR_PRODUCT_ID",
+      "taxId": "PEGAR_TAX_ID",
+      "quantity": 20,
+      "unitCost": 6500
+    }
+  ]
+}
+###############################################################################
+# SALE
+###############################################################################
+
+### Crear Venta
+
+POST {{baseUrl}}/sales
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "sucursalId": "00000000-0000-0000-0000-000000000001",
+  "userId": "PEGAR_ADMIN_USER_ID",
+  "cashSessionId": "PEGAR_CASH_SESSION_ID",
+  "documentNumber": "VTA-000001",
+  "paymentMethod": "CASH",
+  "status": "COMPLETED",
+  "amountPaid": 50000,
+  "notes": "Venta QA",
+  "items": [
+    {
+      "productId": "PEGAR_PRODUCT_ID",
+      "taxId": "PEGAR_TAX_ID",
+      "quantity": 5,
+      "unitPrice": 8500,
+      "discount": 0
+    }
+  ]
+}
+
+###
+
+GET {{baseUrl}}/sales
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+###############################################################################
+# CASH MOVEMENT
+###############################################################################
+
+### Registrar Movimiento
+
+POST {{baseUrl}}/cash/movements
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "sucursalId": "00000000-0000-0000-0000-000000000001",
+  "cashSessionId": "PEGAR_CASH_SESSION_ID",
+  "userId": "PEGAR_ADMIN_USER_ID",
+  "type": "CASH_OUT",
+  "amount": 5000,
+  "reason": "Retiro QA"
+}
+
+###
+
+GET {{baseUrl}}/cash/movements
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+###############################################################################
+# CLOSE CASH SESSION
+###############################################################################
+
+### Cerrar Caja
+
+PATCH {{baseUrl}}/cash/sessions/PEGAR_CASH_SESSION_ID/close
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "closedByUserId": "PEGAR_ADMIN_USER_ID",
+  "closingAmount": 48025,
+  "notes": "QA Backend"
+}
+
+###
+
+GET {{baseUrl}}/cash/sessions
+Authorization: Bearer {{login.response.body.data.accessToken}}
+###############################################################################
+# REPORTS
+###############################################################################
+
+### Dashboard
+
+GET {{baseUrl}}/reports/dashboard
+Authorization: Bearer {{login.response.body.data.accessToken}}
+###############################################################################
+# SALES REPORT
+###############################################################################
+
+### Reporte de Ventas
+
+GET {{baseUrl}}/reports/sales
+Authorization: Bearer {{login.response.body.data.accessToken}}
+###############################################################################
+# PURCHASES REPORT
+###############################################################################
+
+### Reporte de Compras
+
+GET {{baseUrl}}/reports/purchases
+Authorization: Bearer {{login.response.body.data.accessToken}}
+###############################################################################
+# INVENTORY REPORT
+###############################################################################
+
+### Reporte de Inventario
+
+GET {{baseUrl}}/reports/inventory
+Authorization: Bearer {{login.response.body.data.accessToken}}
+###############################################################################
+# PROFIT REPORT
+###############################################################################
+
+### Reporte de Utilidad
+
+GET {{baseUrl}}/reports/profit
+Authorization: Bearer {{login.response.body.data.accessToken}}

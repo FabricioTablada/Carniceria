@@ -1,0 +1,249 @@
+{
+  "meta": {
+    "seed": 1785771727472,
+    "baseUrl": "http://localhost:3002/api/v1",
+    "startedAt": "2026-08-03T15:42:10.243Z",
+    "finishedAt": "2026-08-03T16:08:11.347Z",
+    "totalDurationMs": 1561104,
+    "totalDurationMin": 26.0184,
+    "requestTimeoutMs": 15000,
+    "minimosExigidos": {
+      "sale": 100,
+      "void": 40,
+      "correction": 20,
+      "return": 20,
+      "purchase": 30
+    },
+    "minimosCumplidos": true
+  },
+  "summary": {
+    "ventasRealizadas": 184,
+    "comprasRealizadas": 59,
+    "anulacionesRealizadas": 85,
+    "devolucionesRealizadas": 41,
+    "correccionesRealizadas": 59,
+    "consultasRealizadas": 3514,
+    "operacionesTotales": 3942,
+    "tiempoPromedioPorOperacionMs": 17.793831354643068,
+    "tiempoP95PorOperacionMs": 31.89560000001802,
+    "tiempoP99PorOperacionMs": 50.28159999998752
+  },
+  "porTipoDeOperacion": {
+    "sale": {
+      "count": 184,
+      "failed": 0,
+      "avgMs": 25.253912500002837,
+      "p95Ms": 35.23430000001099,
+      "p99Ms": 43.829300000099465
+    },
+    "purchase": {
+      "count": 59,
+      "failed": 0,
+      "avgMs": 43.60388813559849,
+      "p95Ms": 55.80429999995977,
+      "p99Ms": 82.47609999999986
+    },
+    "void": {
+      "count": 85,
+      "failed": 0,
+      "avgMs": 28.211238823522923,
+      "p95Ms": 36.24099999992177,
+      "p99Ms": 50.9037000000244
+    },
+    "correction": {
+      "count": 59,
+      "failed": 0,
+      "avgMs": 50.089083050856644,
+      "p95Ms": 74.62109999998938,
+      "p99Ms": 81.35619999980554
+    },
+    "return": {
+      "count": 41,
+      "failed": 0,
+      "avgMs": 35.62980731706903,
+      "p95Ms": 46.98969999997644,
+      "p99Ms": 49.95149999996647
+    }
+  },
+  "operacionesPorModulo": {
+    "inventory": {
+      "count": 674,
+      "errors4xx": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 13.390070474781396,
+      "p95Ms": 19.70289999997476,
+      "p99Ms": 23.065100000007078
+    },
+    "purchases": {
+      "count": 59,
+      "errors4xx": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 43.60388813559849,
+      "p95Ms": 55.80429999995977,
+      "p99Ms": 82.47609999999986
+    },
+    "dashboard": {
+      "count": 1660,
+      "errors4xx": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 14.328738915661177,
+      "p95Ms": 22.51560000004247,
+      "p99Ms": 27.161399999982677
+    },
+    "reports": {
+      "count": 320,
+      "errors4xx": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 17.772425312504026,
+      "p95Ms": 28.570299999963026,
+      "p99Ms": 30.118999999947846
+    },
+    "cash": {
+      "count": 46,
+      "errors4xx": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 22.27051304347759,
+      "p95Ms": 25.235100000048988,
+      "p99Ms": 30.78409999993164
+    },
+    "salesQuote": {
+      "count": 523,
+      "errors4xx": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 19.926784130018667,
+      "p95Ms": 28.223400000017136,
+      "p99Ms": 33.51939999987371
+    },
+    "sales": {
+      "count": 396,
+      "errors4xx": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 29.610632828283983,
+      "p95Ms": 51.335000000020955,
+      "p99Ms": 72.38540000002831
+    },
+    "products": {
+      "count": 223,
+      "errors4xx": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 19.910669058301078,
+      "p95Ms": 25.745499999960884,
+      "p99Ms": 28.066500000073574
+    },
+    "returns": {
+      "count": 41,
+      "errors4xx": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 35.62980731706903,
+      "p95Ms": 46.98969999997644,
+      "p99Ms": 49.95149999996647
+    }
+  },
+  "operacionesPorAccion": {
+    "inventory:/inventory?limit=20": 337,
+    "inventory:/reports/batches?limit=10": 337,
+    "bigPurchase": 59,
+    "dashboard:/reports/dashboard": 332,
+    "dashboard:/reports/sales-by-date": 332,
+    "dashboard:/reports/sales-by-category": 332,
+    "dashboard:/reports/low-stock": 332,
+    "dashboard:/notifications": 332,
+    "viewReports:/reports/profit": 36,
+    "cashMovement": 46,
+    "quoteAfterAddToCart": 251,
+    "quoteBeforeConfirm": 184,
+    "confirmSale": 184,
+    "viewReports:/reports/top-products": 41,
+    "searchProduct": 146,
+    "backToPos": 77,
+    "quoteAfterChangeQuantity": 41,
+    "viewSalesHistory": 68,
+    "correctSale": 59,
+    "viewReports:/reports/batches": 37,
+    "voidSale": 85,
+    "viewReports:/reports/cash": 47,
+    "requestQuote": 41,
+    "viewReports:/reports/inventory": 31,
+    "createReturn": 41,
+    "viewReports:/reports/waste": 44,
+    "viewReports:/reports/purchases": 46,
+    "viewReports:/reports/sales-by-cashier": 38,
+    "quoteAfterRemoveFromCart": 6
+  },
+  "statusHttpTally": {
+    "200": 3612,
+    "201": 330
+  },
+  "degradacionProgresiva": {
+    "firstQuarterAvgMs": 17.66826152284222,
+    "lastQuarterAvgMs": 18.150337360408347,
+    "growthPct": 2.728484842398795
+  },
+  "memoriaProcesoBackend": {
+    "samples": 103,
+    "minMb": 22.55859375,
+    "maxMb": 183.73046875,
+    "avgMb": 162.34337075242718,
+    "firstMb": 131.671875,
+    "lastMb": 183.390625,
+    "growthMb": 51.71875
+  },
+  "poolPrismaPostgres": {
+    "samples": 103,
+    "minTotal": 11,
+    "maxTotal": 11,
+    "avgTotal": 11,
+    "lastSample": {
+      "total": 11,
+      "byState": {
+        "active": 1,
+        "idle": 10
+      }
+    }
+  },
+  "errores": {
+    "totalErroresCliente4xx": 0,
+    "totalRateLimited429": 0,
+    "totalErroresServidor5xx": 0,
+    "totalTimeouts": 0,
+    "totalErroresRed": 0,
+    "totalExcepciones": 0,
+    "detalleServidor5xx": [],
+    "detalleTimeouts": [],
+    "detalleRateLimited": [],
+    "excepciones": []
+  },
+  "operacionesFallidasDetalle": {
+    "sale": 0,
+    "purchase": 0,
+    "void": 0,
+    "correction": 0,
+    "return": 0
+  },
+  "recomendaciones": [
+    "Cero respuestas 429 durante toda la jornada intensiva.",
+    "Cero errores 5xx del backend durante toda la jornada.",
+    "Cero timeouts (> 15000ms) durante toda la jornada.",
+    "Sin degradación progresiva relevante: variación de 2.7% entre el primer y el último cuarto de la corrida (dentro de un rango normal).",
+    "Memoria del proceso backend estable: 131.7MB → 183.4MB (crecimiento de 51.7MB).",
+    "Pool de PostgreSQL: máximo 11 conexiones simultáneas observadas (promedio 11.0) — nunca se acercó al límite configurado (`connection_limit=20` en DATABASE_URL)."
+  ]
+}

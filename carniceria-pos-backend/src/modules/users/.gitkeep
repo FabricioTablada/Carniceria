@@ -1,0 +1,7 @@
+# Modulo: users
+# Responsabilidad: Gestion de usuarios y asignacion de roles.
+#
+# Estructura esperada (patron estandar, ver ARCHITECTURE.md seccion 4):
+#   users.routes.ts / users.controller.ts / users.service.ts / users.repository.ts / users.validation.ts / index.ts
+#
+# Pendiente de implementar.

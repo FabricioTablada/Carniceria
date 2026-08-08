@@ -1,0 +1,7 @@
+# Modulo: sales
+# Responsabilidad: Ventas: venta (raiz agregada) + detalle de venta, en una sola transaccion.
+#
+# Estructura esperada (patron estandar, ver ARCHITECTURE.md seccion 4):
+#   sales.routes.ts / sales.controller.ts / sales.service.ts / sales.repository.ts / sales.validation.ts / index.ts
+#
+# Pendiente de implementar.

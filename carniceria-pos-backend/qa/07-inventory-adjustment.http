@@ -1,0 +1,274 @@
+@baseUrl = http://localhost:3000/api/v1
+
+###############################################################################
+# CARNICERIA POS BACKEND
+# QA - Hallazgo 2.2 de auditoria: PATCH /inventory/:id registra
+# InventoryMovement (type: ADJUSTMENT) al cambiar `quantity`.
+#
+# LIMITACION IMPORTANTE: no existe ningun endpoint publico que exponga
+# `InventoryMovement` para lectura (verificado: ningun modulo registra una
+# ruta GET para esa tabla, es de solo escritura interna via el servicio
+# transversal `shared/services/inventoryMovement.service.ts`). Por lo
+# tanto, este archivo valida el COMPORTAMIENTO OBSERVABLE de la API --que
+# `quantity` cambie exactamente lo esperado cuando corresponde, y que
+# permanezca exactamente igual cuando no debería cambiar-- pero NO puede
+# confirmar por si solo que se inserto una fila en `InventoryMovement`.
+# Esa parte especifica requiere inspeccionar la base de datos directamente,
+# o que en el futuro exista un endpoint de consulta (`GET
+# /inventory-movements` o similar) que hoy no existe.
+#
+# Completamente autocontenido: crea su propio impuesto/categoria/producto/
+# fila de inventario. No depende del estado dejado por ningun otro archivo
+# QA, y puede correrse repetidas veces sin fallar (recursos con sufijo de
+# tiempo via {{$timestamp}}).
+#
+# Cobertura:
+#   1. Preparacion de datos (impuesto, categoria, producto, inventario)
+#   2. PATCH aumentando quantity
+#   3. PATCH disminuyendo quantity
+#   4. PATCH con la misma quantity (sin cambio real)
+#   5. PATCH modificando unicamente reorderPoint
+#   6. Validacion de quantity negativa (400)
+###############################################################################
+
+###############################################################################
+# LOGIN
+###############################################################################
+
+### Login (admin)
+# @name login
+
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "Admin123!"
+}
+
+###############################################################################
+# 1. PREPARACION DE DATOS: impuesto, categoria, producto e inventario propios
+###############################################################################
+
+### Impuesto dedicado a este QA
+# @name createTax
+
+POST {{baseUrl}}/taxes
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "code": "QA-INV-{{$timestamp}}",
+  "name": "IVA QA inventory-adjustment {{$timestamp}}",
+  "rate": 13,
+  "isDefault": false,
+  "active": true
+}
+
+###
+
+### Categoria dedicada a este QA
+# @name createCategory
+
+POST {{baseUrl}}/categories
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "name": "QA inventory-adjustment {{$timestamp}}",
+  "description": "Categoria dedicada al QA del hallazgo 2.2",
+  "parentId": null,
+  "active": true
+}
+
+###
+
+### Producto dedicado a este QA
+# @name createProduct
+
+POST {{baseUrl}}/products
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "categoryId": "{{createCategory.response.body.data.id}}",
+  "taxId": "{{createTax.response.body.data.id}}",
+  "sku": "QA-INV-{{$timestamp}}",
+  "barcode": "QA-INV-BC-{{$timestamp}}",
+  "name": "Producto QA inventory-adjustment {{$timestamp}}",
+  "description": "Producto usado para probar PATCH /inventory/:id",
+  "unitOfMeasure": "UNIT",
+  "salePrice": 1000,
+  "cost": 500,
+  "isVariableWeight": false,
+  "trackInventory": true,
+  "active": true
+}
+
+###
+
+### Fila de inventario propia: quantity=10, reorderPoint=2
+# @name createInventory
+
+POST {{baseUrl}}/inventory
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "sucursalId": "00000000-0000-0000-0000-000000000001",
+  "productId": "{{createProduct.response.body.data.id}}",
+  "quantity": 10,
+  "reorderPoint": 2
+}
+
+###
+
+### Confirmacion inicial: quantity=10 antes de cualquier ajuste
+# @name getInventoryInitial
+
+GET {{baseUrl}}/inventory/{{createInventory.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data.quantity === 10
+# - body.data.reorderPoint === 2
+
+###############################################################################
+# 2. PATCH AUMENTANDO quantity (10 -> 15, diferencia +5)
+###############################################################################
+
+### Aumentar quantity de 10 a 15
+# @name patchIncrease
+
+PATCH {{baseUrl}}/inventory/{{createInventory.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "quantity": 15
+}
+
+# Verificar:
+# - HTTP 200
+# - body.data.quantity === 15
+# - body.data.reorderPoint === 2 (no se toco, debe seguir igual)
+
+###
+
+### Confirmar que el saldo quedo persistido (no solo en la respuesta del PATCH)
+GET {{baseUrl}}/inventory/{{createInventory.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data.quantity === 15
+
+###############################################################################
+# 3. PATCH DISMINUYENDO quantity (15 -> 12, diferencia -3)
+###############################################################################
+
+### Disminuir quantity de 15 a 12
+# @name patchDecrease
+
+PATCH {{baseUrl}}/inventory/{{createInventory.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "quantity": 12
+}
+
+# Verificar:
+# - HTTP 200
+# - body.data.quantity === 12
+
+###
+
+### Confirmar que el saldo quedo persistido
+GET {{baseUrl}}/inventory/{{createInventory.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data.quantity === 12
+
+###############################################################################
+# 4. PATCH CON LA MISMA quantity (12 -> 12, sin cambio real)
+###############################################################################
+
+### Enviar quantity=12, identico al valor actual -> no deberia generar
+### ningun ajuste real (diferencia = 0)
+# @name patchSameQuantity
+
+PATCH {{baseUrl}}/inventory/{{createInventory.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "quantity": 12
+}
+
+# Verificar:
+# - HTTP 200
+# - body.data.quantity === 12 (exactamente igual, sin variacion)
+
+###############################################################################
+# 5. PATCH MODIFICANDO UNICAMENTE reorderPoint (sin enviar quantity)
+###############################################################################
+
+### Solo cambiar reorderPoint de 2 a 5 -> quantity NO debe variar en absoluto
+# @name patchReorderPointOnly
+
+PATCH {{baseUrl}}/inventory/{{createInventory.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "reorderPoint": 5
+}
+
+# Verificar:
+# - HTTP 200
+# - body.data.reorderPoint === 5
+# - body.data.quantity === 12 (identico al de los casos 3 y 4, sin tocar)
+
+###
+
+### Confirmar el estado final persistido: quantity=12, reorderPoint=5
+GET {{baseUrl}}/inventory/{{createInventory.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data.quantity === 12
+# - body.data.reorderPoint === 5
+
+###############################################################################
+# 6. VALIDACION DE quantity NEGATIVA (400)
+###############################################################################
+
+### quantity negativo -> error de validacion (400), no debe llegar a
+### ejecutar ningun ajuste (mismo criterio ya vigente antes de este cambio)
+PATCH {{baseUrl}}/inventory/{{createInventory.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "quantity": -1
+}
+
+# Verificar:
+# - HTTP 400
+# - body.success === false
+# - body.error.code === "VALIDATION_ERROR"
+
+###
+
+### Confirmar que el intento invalido no altero el saldo (sigue en 12)
+GET {{baseUrl}}/inventory/{{createInventory.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data.quantity === 12

@@ -1,0 +1,7 @@
+# Modulo: suppliers
+# Responsabilidad: Proveedores.
+#
+# Estructura esperada (patron estandar, ver ARCHITECTURE.md seccion 4):
+#   suppliers.routes.ts / suppliers.controller.ts / suppliers.service.ts / suppliers.repository.ts / suppliers.validation.ts / index.ts
+#
+# Pendiente de implementar.

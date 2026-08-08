@@ -1,0 +1,219 @@
+@baseUrl = http://localhost:3000/api/v1
+
+###############################################################################
+# CARNICERIA POS BACKEND
+# QA - Hallazgo 3.1 de auditoria: POST /auth/refresh y POST /auth/logout.
+#
+# OBJETIVO DEL HALLAZGO: el login ya generaba un refreshToken, pero no
+# existia ningun endpoint que lo recibiera para emitir un nuevo access
+# token, ni ningun endpoint de logout. Se implementaron ambos.
+#
+# DECISIONES ARQUITECTONICAS CONFIRMADAS (verificadas por este QA, no solo
+# documentadas):
+#   - SIN Refresh Token Rotation: /auth/refresh devuelve UNICAMENTE un
+#     accessToken nuevo. El refreshToken original nunca se invalida, no
+#     se reemplaza, no se re-emite -- el cliente sigue usando el mismo
+#     hasta que expire por si solo (JWT_REFRESH_EXPIRES_IN).
+#   - SIN revocacion de tokens: no existe ninguna tabla ni infraestructura
+#     que invalide un JWT ya emitido antes de su expiracion natural.
+#     /auth/logout unicamente dej a constancia en AuditLog
+#     (AuditAction.LOGOUT) -- el accessToken usado para llamarlo sigue
+#     siendo completamente valido despues, y este QA lo demuestra
+#     explicitamente en el caso 5, no solo lo afirma.
+#   - Se usa GET /users/me como "endpoint protegido de referencia" (no
+#     existe /auth/me en este proyecto): no restringe por rol, alcanza
+#     con estar autenticado, ideal para verificar unicamente validez de
+#     token sin mezclar reglas de autorizacion.
+#
+# Completamente autocontenido: solo usa el usuario admin ya sembrado y
+# tokens que el propio archivo genera. No depende del estado dejado por
+# ningun otro archivo QA, y puede correrse repetidas veces sin fallar (no
+# crea ningun recurso persistente).
+#
+# Cobertura:
+#   1. Login exitoso -> guarda accessToken y refreshToken
+#   2. POST /auth/refresh con refreshToken valido -> 200, solo accessToken
+#   3. El accessToken nuevo funciona contra un endpoint protegido
+#   4. POST /auth/logout con el accessToken -> 204
+#   5. El logout NO revoca el token: el mismo accessToken sigue funcionando
+#   6. POST /auth/refresh con refreshToken invalido -> 401
+#   7. POST /auth/refresh con refreshToken expirado -> documentado (no
+#      simulable dentro de un archivo .http sin esperar la expiracion real)
+#   8. POST /auth/logout sin Authorization -> 401
+#   9. Resumen de evidencia: sin rotacion, sin revocacion
+###############################################################################
+
+###############################################################################
+# 1. LOGIN EXITOSO
+###############################################################################
+
+### Login (admin) -> guarda accessToken y refreshToken originales
+# @name login
+
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "Admin123!"
+}
+
+# Verificar:
+# - HTTP 200
+# - body.success === true
+# - body.data.accessToken existe (string no vacio)
+# - body.data.refreshToken existe (string no vacio)
+# - body.data.user.id existe
+
+###############################################################################
+# 2. POST /auth/refresh CON refreshToken VALIDO
+###############################################################################
+
+### Refrescar con el refreshToken obtenido en el login
+# @name refresh
+
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "{{login.response.body.data.refreshToken}}"
+}
+
+# Verificar:
+# - HTTP 200
+# - body.success === true
+# - body.data.accessToken existe (string no vacio)
+# - body.data.accessToken !== "{{login.response.body.data.accessToken}}"
+#   (es un token NUEVO, no el mismo del login)
+# - body.data NO tiene la propiedad "refreshToken" -- SIN ROTACION: este
+#   endpoint devuelve UNICAMENTE un accessToken nuevo, nunca un
+#   refreshToken nuevo. Si esta propiedad apareciera en la respuesta,
+#   seria una regresion del alcance aprobado para este hallazgo.
+# - body.data NO tiene la propiedad "user" -- a diferencia de /login,
+#   /refresh no vuelve a exponer el objeto de usuario completo
+
+###############################################################################
+# 3. EL accessToken NUEVO FUNCIONA CONTRA UN ENDPOINT PROTEGIDO
+###############################################################################
+
+### GET /users/me con el accessToken devuelto por /auth/refresh (no el del
+### login original) -> confirma que el token nuevo es realmente valido y
+### utilizable, no solo que el endpoint respondio 200 en el paso anterior
+GET {{baseUrl}}/users/me
+Authorization: Bearer {{refresh.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.success === true
+# - body.data.id === "{{login.response.body.data.user.id}}" (mismo usuario)
+
+###############################################################################
+# 4. POST /auth/logout CON EL accessToken
+###############################################################################
+
+### Logout usando el accessToken original del login
+POST {{baseUrl}}/auth/logout
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 204 No Content
+# - Sin cuerpo de respuesta
+
+###############################################################################
+# 5. EL LOGOUT NO REVOCA EL TOKEN (verificacion explicita, no solo documentada)
+###############################################################################
+
+### Reutilizar el MISMO accessToken usado para hacer logout, contra el
+### mismo endpoint protegido -> debe seguir funcionando exactamente igual
+### que antes del logout. Este es el comportamiento ESPERADO: el sistema
+### no implementa ninguna infraestructura de revocacion de tokens (fuera
+### del alcance de este hallazgo, ver auth.service.ts -> logout()), asi
+### que un JWT ya emitido sigue siendo valido hasta su propia expiracion
+### natural (JWT_EXPIRES_IN), sin importar que su dueño haya llamado a
+### /auth/logout. La "sesion cerrada" en este sistema es una constancia
+### de auditoria (AuditLog con AuditAction.LOGOUT), no una invalidacion
+### tecnica del token.
+GET {{baseUrl}}/users/me
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200 (NO 401 -- si esto fallara con 401, significaria que se
+#   implemento algun tipo de revocacion no aprobada para este hallazgo)
+# - body.data.id === "{{login.response.body.data.user.id}}"
+
+###############################################################################
+# 6. POST /auth/refresh CON refreshToken INVALIDO
+###############################################################################
+
+### Token con formato de JWT invalido -> 401
+POST {{baseUrl}}/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "token-invalido-{{$timestamp}}"
+}
+
+# Verificar:
+# - HTTP 401
+# - body.success === false
+
+###############################################################################
+# 7. POST /auth/refresh CON refreshToken EXPIRADO
+###############################################################################
+
+### NOTA: un archivo .http no puede simular el paso del tiempo ni firmar
+### un JWT con una fecha de expiracion arbitraria (eso requeriria generar
+### el token manualmente con la misma clave secreta del servidor, fuera
+### del alcance de una prueba de caja negra via HTTP). Este caso queda
+### documentado en vez de automatizado:
+#
+# RESULTADO ESPERADO (verificado por lectura de codigo, no por ejecucion
+# de este archivo): `verifyRefreshToken()` (shared/utils/jwt.ts, sin
+# modificar en este hallazgo) usa `jwt.verify()` de la libreria
+# `jsonwebtoken`, que rechaza automaticamente cualquier token cuyo `exp`
+# ya haya pasado, lanzando un error que `verifyRefreshToken` traduce a
+# `UnauthorizedError('Token de refresco invalido o expirado.')` -> 401.
+# Mismo codigo de error que el caso 6 (invalido): la API no distingue
+# "invalido" de "expirado" en el mensaje, por diseño (evita dar pistas a
+# un atacante sobre el motivo exacto del rechazo).
+#
+# Para verificar esto empiricamente en un entorno real: configurar
+# JWT_REFRESH_EXPIRES_IN en un valor muy corto (ej. "5s"), esperar a que
+# expire, y repetir el caso 2 -- debe dar el mismo 401 que el caso 6.
+
+###############################################################################
+# 8. POST /auth/logout SIN Authorization
+###############################################################################
+
+### Sin header Authorization -> 401
+POST {{baseUrl}}/auth/logout
+
+# Verificar:
+# - HTTP 401
+# - body.success === false
+
+###############################################################################
+# 9. RESUMEN DE EVIDENCIA
+###############################################################################
+#
+# Este archivo demuestra, con evidencia directa de la API (no solo de
+# codigo), las tres decisiones arquitectonicas confirmadas para el
+# hallazgo 3.1:
+#
+#   a) SIN Refresh Token Rotation: la respuesta de POST /auth/refresh
+#      (caso 2) nunca incluye una propiedad "refreshToken" -- solo
+#      "accessToken". El refreshToken usado en el caso 2 es exactamente
+#      el mismo que devolvio el login del caso 1; nunca se reemplaza.
+#   b) SIN revocacion de tokens: el caso 5 reutiliza, DESPUES de un
+#      logout exitoso (caso 4), el mismo accessToken que se uso PARA ese
+#      logout -- y sigue respondiendo 200 en un endpoint protegido. Si el
+#      sistema revocara tokens al hacer logout, este caso tendria que
+#      fallar con 401; el hecho de que responda 200 es la prueba de que
+#      no hay revocacion, no una suposicion.
+#   c) El mismo refreshToken permanece vigente hasta su expiracion
+#      configurada (`JWT_REFRESH_EXPIRES_IN`): no hay ningun mecanismo en
+#      todo este flujo que lo invalide antes de tiempo -- ni usarlo en
+#      /auth/refresh (caso 2), ni hacer logout con el access token
+#      asociado (caso 4). El unico caso en que un refreshToken deja de
+#      funcionar es el caso 6/7 (formato invalido o expiracion natural),
+#      nunca por una accion explicita de "cerrar sesion".

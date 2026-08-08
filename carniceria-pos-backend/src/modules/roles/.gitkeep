@@ -1,0 +1,7 @@
+# Modulo: roles
+# Responsabilidad: Roles y permisos. Base del RBAC.
+#
+# Estructura esperada (patron estandar, ver ARCHITECTURE.md seccion 4):
+#   roles.routes.ts / roles.controller.ts / roles.service.ts / roles.repository.ts / roles.validation.ts / index.ts
+#
+# Pendiente de implementar.

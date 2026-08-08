@@ -1,0 +1,36 @@
+# Dependencias
+node_modules/
+
+# Compilado
+dist/
+build/
+
+# Variables de entorno (NUNCA versionar secretos)
+.env
+.env.local
+.env.*.local
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Respaldos de base de datos
+backups/
+*.zip
+
+# Pruebas / cobertura
+coverage/
+.nyc_output/
+
+# Sistema operativo / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+api.http

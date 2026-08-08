@@ -1,0 +1,249 @@
+@baseUrl = http://localhost:3000/api/v1
+
+###############################################################################
+# CARNICERIA POS BACKEND
+# QA - GET /reports/cash
+#
+# Ejecutar despues de 01-backend-setup.http (requiere al menos una caja
+# registradora ya creada).
+#
+# Objetivo: validar funcionalmente GET /reports/cash:
+#   1. Respuesta 200
+#   2. Paginacion
+#   3. Filtro por sucursal
+#   4. Filtro por caja registradora
+#   5. Filtro por usuario
+#   6. Filtro por rango de fechas
+#   7. Conteo total correcto
+#   8. Respuesta cuando no existen registros
+#
+# NOTA: userId/sucursalId NO se envian al abrir sesion de caja -- el backend
+# los resuelve desde el token (Sprint de Seguridad), mismo criterio que Sales.
+###############################################################################
+
+###############################################################################
+# LOGIN
+###############################################################################
+
+### Login
+# @name login
+
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "Admin123!"
+}
+
+###############################################################################
+# PREPARACION: datos minimos para poder validar el reporte
+###############################################################################
+
+### Crear una caja registradora dedicada a este QA (nunca tiene sesiones
+### previas -- evita el 409 de "sesion ya abierta" si se reutilizara una
+### caja registradora existente que ya tenga una sesion OPEN de otra
+### corrida anterior de QA).
+# @name createCashRegister
+
+POST {{baseUrl}}/cash-registers
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "sucursalId": "00000000-0000-0000-0000-000000000001",
+  "name": "Caja QA reports-cash",
+  "active": true
+}
+
+###
+
+### Abrir sesion de caja de prueba
+# @name openSession
+
+POST {{baseUrl}}/cash/sessions
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "cashRegisterId": "{{createCashRegister.response.body.data.id}}",
+  "openingAmount": 10000,
+  "notes": "QA reports/cash"
+}
+
+###
+
+### Cerrar la sesion de prueba, para tener al menos un registro CLOSED en el reporte
+# @name closeSession
+
+PATCH {{baseUrl}}/cash/sessions/{{openSession.response.body.data.id}}/close
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "closedByUserId": "{{openSession.response.body.data.openedByUserId}}",
+  "closingAmount": 10000,
+  "notes": "QA reports/cash - cierre"
+}
+
+###############################################################################
+# CASO 1: Respuesta 200 y forma general del sobre (data + meta)
+###############################################################################
+
+### Sin filtros -> 200, data[] y meta completo
+# @name reportsCashDefault
+
+GET {{baseUrl}}/reports/cash
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.success === true
+# - body.data es un array (incluye la sesion abierta en este archivo)
+# - body.meta = { page, limit, total, totalPages, hasNext, hasPrev }
+
+###############################################################################
+# CASO 2: Paginacion
+###############################################################################
+
+### page=1&limit=1 -> como mucho 1 item
+GET {{baseUrl}}/reports/cash?page=1&limit=1
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - body.data.length <= 1
+# - body.meta.page === 1
+# - body.meta.limit === 1
+# - body.meta.totalPages === Math.ceil(body.meta.total / 1)
+
+###
+
+### page fuera de rango -> data vacio, sin error
+GET {{baseUrl}}/reports/cash?page=999&limit=10
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200 (no error)
+# - body.data.length === 0
+# - body.meta.hasNext === false
+
+###############################################################################
+# CASO 3: Filtro por sucursal
+###############################################################################
+
+### Sucursal real -> incluye la sesion de prueba
+GET {{baseUrl}}/reports/cash?sucursalId=00000000-0000-0000-0000-000000000001
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - todo item de body.data tiene sucursal.id === "00000000-0000-0000-0000-000000000001"
+# - body.meta.total >= 1
+
+###
+
+### sucursalId inexistente -> vacio
+GET {{baseUrl}}/reports/cash?sucursalId=00000000-0000-0000-0000-00000000ffff
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data.length === 0
+# - body.meta.total === 0
+
+###############################################################################
+# CASO 4: Filtro por caja registradora
+###############################################################################
+
+### La caja usada en openSession -> incluye la sesion de prueba
+GET {{baseUrl}}/reports/cash?cashRegisterId={{createCashRegister.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - todo item de body.data tiene cashRegister.id igual al filtrado
+# - body.meta.total >= 1
+
+###
+
+### cashRegisterId inexistente -> vacio
+GET {{baseUrl}}/reports/cash?cashRegisterId=00000000-0000-0000-0000-00000000ffff
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data.length === 0
+
+###############################################################################
+# CASO 5: Filtro por usuario (cajero que abrio la sesion)
+###############################################################################
+
+### El usuario que abrio openSession
+GET {{baseUrl}}/reports/cash?userId={{openSession.response.body.data.openedByUserId}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - todo item de body.data tiene openedBy.id igual al filtrado
+# - body.meta.total >= 1
+
+###
+
+### userId inexistente -> vacio
+GET {{baseUrl}}/reports/cash?userId=00000000-0000-0000-0000-00000000ffff
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data.length === 0
+
+###############################################################################
+# CASO 6: Filtro por rango de fechas (aplica sobre openedAt)
+###############################################################################
+
+### Rango que SI incluye hoy -> incluye la sesion de prueba
+GET {{baseUrl}}/reports/cash?dateFrom=2020-01-01&dateTo=2100-01-01
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.meta.total >= 1
+
+###
+
+### Rango que NO incluye hoy (fechas pasadas) -> vacio
+GET {{baseUrl}}/reports/cash?dateFrom=2000-01-01&dateTo=2000-01-31
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data.length === 0
+# - body.meta.total === 0
+
+###############################################################################
+# CASO 7: Conteo total correcto
+###############################################################################
+
+### Combinar sucursal + caja + rango amplio -> total debe coincidir exactamente
+### con la cantidad de items devueltos (limit por defecto cubre el total)
+GET {{baseUrl}}/reports/cash?sucursalId=00000000-0000-0000-0000-000000000001&cashRegisterId={{createCashRegister.response.body.data.id}}&dateFrom=2020-01-01&dateTo=2100-01-01
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.meta.total === body.data.length
+
+###############################################################################
+# CASO 8: Respuesta cuando no existen registros
+###############################################################################
+
+### Combinacion imposible (sucursal real + usuario inexistente)
+GET {{baseUrl}}/reports/cash?sucursalId=00000000-0000-0000-0000-000000000001&userId=00000000-0000-0000-0000-00000000ffff
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200 (una lista vacia es una respuesta valida, NO un 404)
+# - body.success === true
+# - body.data es exactamente []
+# - body.meta.total === 0
+# - body.meta.totalPages === 0

@@ -1,0 +1,333 @@
+@baseUrl = http://localhost:3000/api/v1
+
+###############################################################################
+# CARNICERIA POS BACKEND
+# QA - GET /reports/low-stock
+#
+# Completamente autocontenido: crea toda su propia sucursal/categoria/
+# impuesto/productos/inventario. No depende del estado dejado por ningun
+# otro archivo QA, y puede correrse repetidas veces sin fallar (cada
+# corrida crea sus propios recursos, sin colisionar con corridas previas
+# gracias a nombres/SKU/barcode con sufijo de tiempo via {{$timestamp}}).
+#
+# Cobertura:
+#   1. Login
+#   2. Preparacion de datos necesaria
+#   3. GET /reports/low-stock sin filtros
+#   4. Filtro por sucursal
+#   5. Filtro por categoria
+#   6. threshold personalizado
+#   7. threshold = 0
+#   8. Lista vacia cuando no existan resultados
+#   9. Validacion de parametros invalidos (400 cuando corresponda)
+#   10. Orden correcto (menor stock -> mayor stock)
+###############################################################################
+
+###############################################################################
+# 1. LOGIN
+###############################################################################
+
+### Login
+# @name login
+
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "Admin123!"
+}
+
+###############################################################################
+# 2. PREPARACION DE DATOS: catalogo e inventario propios de este QA
+###############################################################################
+
+### Impuesto dedicado a este QA
+# @name createTax
+
+POST {{baseUrl}}/taxes
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "code": "QA-LOWSTOCK-{{$timestamp}}",
+  "name": "IVA QA low-stock",
+  "rate": 13,
+  "isDefault": false,
+  "active": true
+}
+
+###
+
+### Categoria dedicada a este QA
+# @name createCategory
+
+POST {{baseUrl}}/categories
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "name": "QA low-stock {{$timestamp}}",
+  "description": "Categoria dedicada al QA de GET /reports/low-stock",
+  "parentId": null,
+  "active": true
+}
+
+###
+
+### Producto #1: quedara POR DEBAJO de su reorderPoint (bajo stock real)
+# @name createProductLow
+
+POST {{baseUrl}}/products
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "categoryId": "{{createCategory.response.body.data.id}}",
+  "taxId": "{{createTax.response.body.data.id}}",
+  "sku": "QA-LOW-{{$timestamp}}",
+  "barcode": "QA-LOW-BC-{{$timestamp}}",
+  "name": "Producto QA bajo stock {{$timestamp}}",
+  "description": "Producto con quantity por debajo de su reorderPoint",
+  "unitOfMeasure": "UNIT",
+  "salePrice": 1000,
+  "cost": 500,
+  "isVariableWeight": false,
+  "trackInventory": true,
+  "active": true
+}
+
+###
+
+### Producto #2: quedara POR ENCIMA de su reorderPoint (stock normal)
+# @name createProductOk
+
+POST {{baseUrl}}/products
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "categoryId": "{{createCategory.response.body.data.id}}",
+  "taxId": "{{createTax.response.body.data.id}}",
+  "sku": "QA-OK-{{$timestamp}}",
+  "barcode": "QA-OK-BC-{{$timestamp}}",
+  "name": "Producto QA stock normal {{$timestamp}}",
+  "description": "Producto con quantity por encima de su reorderPoint",
+  "unitOfMeasure": "UNIT",
+  "salePrice": 1000,
+  "cost": 500,
+  "isVariableWeight": false,
+  "trackInventory": true,
+  "active": true
+}
+
+###
+
+### Inventario del producto #1: quantity=2, reorderPoint=10 -> BAJO stock
+# @name createInventoryLow
+
+POST {{baseUrl}}/inventory
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "sucursalId": "00000000-0000-0000-0000-000000000001",
+  "productId": "{{createProductLow.response.body.data.id}}",
+  "quantity": 2,
+  "reorderPoint": 10
+}
+
+###
+
+### Inventario del producto #2: quantity=100, reorderPoint=10 -> stock normal
+# @name createInventoryOk
+
+POST {{baseUrl}}/inventory
+Authorization: Bearer {{login.response.body.data.accessToken}}
+Content-Type: application/json
+
+{
+  "sucursalId": "00000000-0000-0000-0000-000000000001",
+  "productId": "{{createProductOk.response.body.data.id}}",
+  "quantity": 100,
+  "reorderPoint": 10
+}
+
+###############################################################################
+# 3. GET /reports/low-stock SIN FILTROS
+###############################################################################
+
+### Sin ningun filtro -> 200 y forma de respuesta correcta.
+### NOTA: sin filtros, el resultado depende de TODO el inventario del
+### sistema (no solo el de este QA), asi que aqui solo se verifica la
+### forma de la respuesta (smoke test), no un conteo exacto -- los casos
+### 4 y 5 (con filtro) si verifican conteos exactos y deterministicos.
+# @name lowStockNoFilters
+
+GET {{baseUrl}}/reports/low-stock
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.success === true
+# - body.data es un array (sin body.meta: no es un listado paginado)
+
+###############################################################################
+# 4. FILTRO POR SUCURSAL
+###############################################################################
+
+### Filtrar por la sucursal real + la categoria de este QA -> incluye el producto #1
+GET {{baseUrl}}/reports/low-stock?sucursalId=00000000-0000-0000-0000-000000000001&categoryId={{createCategory.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data.length === 1 (solo el producto #1: quantity=2 <= reorderPoint=10)
+# - body.data[0].sucursalId === "00000000-0000-0000-0000-000000000001"
+
+###
+
+### sucursalId inexistente -> vacio, sin error
+GET {{baseUrl}}/reports/low-stock?sucursalId=00000000-0000-0000-0000-00000000ffff
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data es un array vacio []
+
+###############################################################################
+# 5. FILTRO POR CATEGORIA
+###############################################################################
+
+### La categoria de este QA -> incluye solo el producto #1
+# @name lowStockByCategory
+
+GET {{baseUrl}}/reports/low-stock?categoryId={{createCategory.response.body.data.id}}
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data.length === 1
+# - body.data[0].productId === "{{createProductLow.response.body.data.id}}"
+# - el producto #2 NO aparece (quantity=100 > reorderPoint=10)
+
+###
+
+### Una categoria distinta (sin productos de este QA) -> vacio
+GET {{baseUrl}}/reports/low-stock?categoryId=00000000-0000-0000-0000-00000000ffff
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data es un array vacio []
+
+###############################################################################
+# 6. THRESHOLD PERSONALIZADO
+###############################################################################
+
+### threshold=150 -> ahora TAMBIEN el producto #2 (quantity=100) queda "bajo"
+# @name lowStockThreshold150
+
+GET {{baseUrl}}/reports/low-stock?categoryId={{createCategory.response.body.data.id}}&threshold=150
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data.length === 2 (ambos productos: 2 <= 150 y 100 <= 150)
+# - cada item tiene thresholdUsed === 150
+
+###
+
+### threshold=1 -> ni siquiera el producto #1 (quantity=2 > 1) queda "bajo"
+GET {{baseUrl}}/reports/low-stock?categoryId={{createCategory.response.body.data.id}}&threshold=1
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data es un array vacio []
+
+###############################################################################
+# 7. THRESHOLD = 0
+###############################################################################
+
+### threshold=0 -> caso limite: es un valor VALIDO (>= 0), no debe rechazarse
+### como parametro invalido. Ningun producto de este QA tiene quantity=0,
+### asi que no debe devolver ni el #1 (quantity=2) ni el #2 (quantity=100).
+GET {{baseUrl}}/reports/low-stock?categoryId={{createCategory.response.body.data.id}}&threshold=0
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200 (threshold=0 NO es un dato invalido)
+# - body.success === true
+# - body.data es un array vacio []
+
+###############################################################################
+# 8. LISTA VACIA
+###############################################################################
+
+### Combinacion sin resultados posibles (categoria real de este QA + sucursal inexistente)
+GET {{baseUrl}}/reports/low-stock?categoryId={{createCategory.response.body.data.id}}&sucursalId=00000000-0000-0000-0000-00000000ffff
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200 (una lista vacia es una respuesta valida, NO un 404)
+# - body.success === true
+# - body.data es exactamente []
+
+###############################################################################
+# 9. VALIDACION DE PARAMETROS INVALIDOS (400)
+###############################################################################
+
+### threshold negativo -> error de validacion (400), no 200 ni 500
+GET {{baseUrl}}/reports/low-stock?threshold=-5
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 400
+# - body.success === false
+
+###
+
+### threshold no numerico -> error de validacion (400)
+GET {{baseUrl}}/reports/low-stock?threshold=abc
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 400
+# - body.success === false
+
+###
+
+### sucursalId con formato invalido (no UUID) -> error de validacion (400)
+GET {{baseUrl}}/reports/low-stock?sucursalId=no-es-un-uuid
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 400
+# - body.success === false
+
+###
+
+### categoryId con formato invalido (no UUID) -> error de validacion (400)
+GET {{baseUrl}}/reports/low-stock?categoryId=no-es-un-uuid
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 400
+# - body.success === false
+
+###############################################################################
+# 10. ORDEN CORRECTO (menor stock -> mayor stock)
+###############################################################################
+
+### threshold=150 trae ambos productos: el #1 (quantity=2) debe venir
+### ANTES que el #2 (quantity=100) -- orden ascendente por quantity.
+GET {{baseUrl}}/reports/low-stock?categoryId={{createCategory.response.body.data.id}}&threshold=150
+Authorization: Bearer {{login.response.body.data.accessToken}}
+
+# Verificar:
+# - HTTP 200
+# - body.data.length === 2
+# - body.data[0].quantity <= body.data[1].quantity
+# - body.data[0].productId === "{{createProductLow.response.body.data.id}}"
+# - body.data[1].productId === "{{createProductOk.response.body.data.id}}"

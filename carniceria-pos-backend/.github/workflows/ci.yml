@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches:
+      # NOTA: cambiar "main" por el nombre real de la rama principal del
+      # repositorio si es distinto (por ejemplo "master").
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    env:
+      # prisma generate solo necesita que esta variable exista para poder
+      # generar el cliente a partir de prisma/schema.prisma -- este
+      # pipeline no se conecta a ninguna base de datos real (alcance
+      # aprobado para el hallazgo 6.6: sin PostgreSQL, sin migraciones).
+      DATABASE_URL: 'postgresql://user:password@localhost:5432/ci_placeholder'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Test
+        run: npm run test

@@ -1,0 +1,7 @@
+# Modulo: cash
+# Responsabilidad: Caja: sesion, apertura/cierre y movimientos de caja.
+#
+# Estructura esperada (patron estandar, ver ARCHITECTURE.md seccion 4):
+#   cash.routes.ts / cash.controller.ts / cash.service.ts / cash.repository.ts / cash.validation.ts / index.ts
+#
+# Pendiente de implementar.

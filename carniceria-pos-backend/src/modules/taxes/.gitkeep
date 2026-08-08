@@ -1,0 +1,7 @@
+# Modulo: taxes
+# Responsabilidad: Impuestos TOTALMENTE configurables (decision #7). Nada de tasas fijas en codigo.
+#
+# Estructura esperada (patron estandar, ver ARCHITECTURE.md seccion 4):
+#   taxes.routes.ts / taxes.controller.ts / taxes.service.ts / taxes.repository.ts / taxes.validation.ts / index.ts
+#
+# Pendiente de implementar.

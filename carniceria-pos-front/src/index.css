@@ -1,0 +1,369 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Brand Refresh Premium — #993333.
+ * -----------------------------------------------------------------------------
+ * Ambos temas comparten la misma identidad (marca, jerarquia, radios,
+ * sombras): el oscuro es la referencia principal del diseño (paleta
+ * aprobada explicitamente: Background #0F0F10, Card #18181B, Card Hover
+ * #202024, Border #2C2C31, Sidebar #1B1515, Muted #A1A1AA, Foreground
+ * #F5F5F5); el claro reutiliza exactamente el mismo `--brand`/`--brand-hover`/
+ * `--brand-active`/`--brand-accent` y la misma jerarquia de elevacion
+ * (fondo -> card -> card-hover), solo invertida a tonos claros — nunca
+ * blanco puro ni negro puro en ninguno de los dos.
+ */
+:root {
+  --background: oklch(0.985 0.003 24);
+  --foreground: oklch(0.16 0.004 24);
+  --card: oklch(0.995 0.002 24);
+  --card-foreground: oklch(0.16 0.004 24);
+  --card-hover: oklch(0.965 0.004 24);
+  --popover: oklch(0.995 0.002 24);
+  --popover-foreground: oklch(0.16 0.004 24);
+  --primary: var(--brand);
+  --primary-foreground: var(--brand-foreground);
+  --secondary: oklch(0.955 0.004 24);
+  --secondary-foreground: oklch(0.16 0.004 24);
+  --muted: oklch(0.955 0.004 24);
+  --muted-foreground: oklch(0.5 0 0);
+  --accent: oklch(0.955 0.004 24);
+  --accent-foreground: oklch(0.16 0.004 24);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.9 0.004 24);
+  --input: oklch(0.9 0.004 24);
+  --ring: var(--brand);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --brand: oklch(0.4708 0.1367 24);
+  --brand-foreground: oklch(0.985 0 0);
+  --brand-hover: oklch(0.4128 0.1179 23.85);
+  --brand-active: oklch(0.3721 0.1068 23.88);
+  --brand-accent: oklch(0.5428 0.1413 23.01);
+  --accent-amber: oklch(0.75 0.15 70);
+  --accent-amber-foreground: oklch(0.205 0 0);
+  --accent-teal: oklch(0.55 0.11 165);
+  --accent-teal-foreground: oklch(0.985 0 0);
+  /* Sprint UX/UI PIPASA V1, Bloque 1: unico color semantico que faltaba —
+     "success" (verde) no existia en ningun token, ni siquiera bajo otro
+     nombre (a diferencia de warning/info, que ya cubrian accent-amber/
+     accent-teal). Misma receta L/C que el resto de la familia de acentos
+     (comparar con --accent-teal, L=0.55 C=0.11), hue 142 = verde real,
+     distinto del verde-azulado de --accent-teal (165). Identico en ambos
+     temas, mismo criterio que --brand/--accent-amber/--accent-teal. */
+  --success: oklch(0.58 0.13 142);
+  --success-foreground: oklch(0.985 0 0);
+  --radius: 0.625rem;
+  /* Pulido visual final del Sidebar del Backoffice (aprobado, "misma
+     calidad y lenguaje que el POS"): la familia `--sidebar-*` (identidad
+     oscura propia, fija en ambos temas) se retira — `Sidebar.tsx` pasa a
+     usar los tokens genericos del tema (`--card`/`--border`/`--muted`/
+     `--brand`), igual que el resto del Backoffice claro. Verificado sin
+     otro consumidor (`DashboardLayout.tsx` era el unico otro archivo que
+     leia `bg-sidebar`, tambien migrado). */
+  /* Superficies del POS (header/contenido/carrito): mismo criterio que
+     --sidebar (POS con identidad de marca propia), pero espejando
+     exactamente la luminosidad/croma de --card/--muted de este tema —
+     en claro ya comparten el hue 24, asi que son iguales a --card/--muted. */
+  --pos-content: oklch(0.995 0.002 24);
+  --pos-content-muted: oklch(0.955 0.004 24);
+}
+
+/* Rediseño del POS ("terminal propia", aprobado): tokens EXCLUSIVOS del
+   POS, en su propio selector (`.pos-surface`) — a diferencia de
+   `--pos-content` (arriba, compartido con `DashboardLayout.tsx`), estos no
+   se tocan desde ninguna pantalla administrativa.
+   Pulido visual (aprobado, "software comercial profesional"): la
+   superficie oscura ("terminal") se descarta — "no combina con el resto
+   del sistema... debe verse limpio y luminoso". Pasa a blanco/gris muy
+   claro, misma familia de tono (hue 24) que `--card`/`--muted` del resto
+   del ERP, para que el POS se sienta parte de la misma familia visual sin
+   ser una copia literal del Backoffice. El color de marca (`--brand`) se
+   reserva para botones, estados activos y acciones principales — nunca
+   como fondo de superficie.
+   Corrección de soporte de temas (aprobado): estos valores son los del
+   tema CLARO — antes eran fijos (no dependían de `.dark`), lo que hacía
+   que el POS se viera "hardcodeado en claro" incluso con el ERP en modo
+   oscuro. Ahora `.dark .pos-surface` (mas abajo) los redefine, mismo
+   criterio ya usado para `--pos-content`/`--pos-content-muted`. */
+.pos-surface {
+  --pos-bg: oklch(0.975 0.003 24);
+  --pos-panel: oklch(0.995 0.002 24);
+  --pos-panel-2: oklch(0.96 0.005 24);
+  --pos-border: oklch(0.9 0.006 24);
+  --pos-ink: oklch(0.18 0.006 24);
+  --pos-ink-muted: oklch(0.5 0.01 24);
+}
+
+/* Corrección de soporte de temas (aprobado, "el POS debe respetar el
+   ThemeProvider del ERP"): valores del tema OSCURO — misma tecnica que
+   `--pos-content`/`--pos-content-muted` en `.dark` (abajo): misma
+   luminosidad/croma que `--background`/`--card`/`--muted`/`--border`/
+   `--foreground`/`--muted-foreground` de este tema, con el hue cambiado a
+   24 (familia calida de marca) en vez del gris frio 285.x del resto del
+   Backoffice. */
+.dark .pos-surface {
+  --pos-bg: oklch(0.1689 0.0021 24);
+  --pos-panel: oklch(0.2103 0.0059 24);
+  --pos-panel-2: oklch(0.2452 0.0075 24);
+  --pos-border: oklch(0.2951 0.009 24);
+  --pos-ink: oklch(0.9702 0 24);
+  --pos-ink-muted: oklch(0.7118 0.0129 24);
+}
+
+/* Bloque 7.25 (ventana de actualizacion del escritorio) — Decision 3
+   (documentada en ROADMAP.md): identidad propia, DELIBERADAMENTE de un
+   solo tema oscuro premium — no alterna con el ThemeProvider del ERP
+   (mismo criterio que `.pos-surface`, que si lo hace; esta pantalla
+   elige no hacerlo, a pedido explicito). `--brand`/`--brand-hover`/
+   `--brand-active`/`--brand-accent`/`--success`/`--accent-teal` NO se
+   redefinen aca: ya son identicos en `:root`/`.dark` (ver arriba), se
+   reutilizan directos sin duplicar valores. */
+.update-ready-surface {
+  --ur-bg: oklch(0.12 0.004 24);
+  --ur-card: oklch(0.17 0.005 24);
+  --ur-card-2: oklch(0.195 0.008 24);
+  --ur-border: oklch(1 0 0 / 8%);
+  --ur-fg: oklch(0.9702 0 89.88);
+  --ur-muted: oklch(0.68 0.01 24);
+}
+
+.dark {
+  --background: oklch(0.1689 0.0021 286.18);
+  --foreground: oklch(0.9702 0 89.88);
+  --card: oklch(0.2103 0.0059 285.89);
+  --card-foreground: oklch(0.9702 0 89.88);
+  --card-hover: oklch(0.2452 0.0075 285.83);
+  --popover: oklch(0.2103 0.0059 285.89);
+  --popover-foreground: oklch(0.9702 0 89.88);
+  --primary: var(--brand);
+  --primary-foreground: var(--brand-foreground);
+  --secondary: oklch(0.2452 0.0075 285.83);
+  --secondary-foreground: oklch(0.9702 0 89.88);
+  --muted: oklch(0.2452 0.0075 285.83);
+  --muted-foreground: oklch(0.7118 0.0129 286.07);
+  --accent: oklch(0.2452 0.0075 285.83);
+  --accent-foreground: oklch(0.9702 0 89.88);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(0.2951 0.009 285.84);
+  --input: oklch(0.2951 0.009 285.84);
+  --ring: var(--brand);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --brand: oklch(0.4708 0.1367 24);
+  --brand-foreground: oklch(0.985 0 0);
+  --brand-hover: oklch(0.4128 0.1179 23.85);
+  --brand-active: oklch(0.3721 0.1068 23.88);
+  --brand-accent: oklch(0.5428 0.1413 23.01);
+  --accent-amber: oklch(0.75 0.15 70);
+  --accent-amber-foreground: oklch(0.205 0 0);
+  --accent-teal: oklch(0.55 0.11 165);
+  --accent-teal-foreground: oklch(0.985 0 0);
+  --success: oklch(0.58 0.13 142);
+  --success-foreground: oklch(0.985 0 0);
+  /* Mismo criterio que en :root, pero espejando la luminosidad/croma
+     REAL de --card/--muted de este tema (0.2103/0.2452), solo con el
+     hue cambiado de 285.89/285.83 (gris frio, familia distinta del
+     sidebar) a 24 (familia calida de marca). Misma oscuridad exacta que
+     ya tenian estas superficies — no se aclara nada, solo se unifica el
+     tono. */
+  --pos-content: oklch(0.2103 0.006 24);
+  --pos-content-muted: oklch(0.2452 0.0075 24);
+}
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: 'Geist Variable', sans-serif;
+  /* Sprint UX/UI PIPASA V1, Bloque 1: unica familia nueva — reservada para
+     dato tabular (SKU, precios, cantidades, codigos) en tablas/paneles de
+     resumen, nunca para texto de interfaz general (eso sigue siendo
+     --font-sans). Sin consumidor todavia en este bloque — se agrega aca
+     para que los bloques siguientes (tabla, formulario) puedan usarla sin
+     tocar este archivo de nuevo. */
+  --font-mono: 'Geist Mono Variable', ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-active: var(--brand-active);
+  --color-brand-accent: var(--brand-accent);
+  --color-accent-amber: var(--accent-amber);
+  --color-accent-amber-foreground: var(--accent-amber-foreground);
+  --color-accent-teal: var(--accent-teal);
+  --color-accent-teal-foreground: var(--accent-teal-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  /* Alias semanticos, Bloque 1: NO son colores nuevos — apuntan a tokens
+     ya existentes (--accent-amber/--accent-teal) para que los componentes
+     de estado (Badge, Alert, KPI — bloques siguientes) puedan escribir
+     `bg-warning`/`bg-info` en vez de `bg-accent-amber`/`bg-accent-teal`.
+     `--color-destructive` (mas abajo en este mismo bloque) ya cumple el
+     mismo rol para "danger" — no se le agrega un alias "danger" para no
+     tener dos nombres para lo mismo. */
+  --color-warning: var(--accent-amber);
+  --color-warning-foreground: var(--accent-amber-foreground);
+  --color-info: var(--accent-teal);
+  --color-info-foreground: var(--accent-teal-foreground);
+  --color-pos-content: var(--pos-content);
+  --color-pos-content-muted: var(--pos-content-muted);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-card-hover: var(--card-hover);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+/*
+ * Bloque 13.6 — Motor de Documentos: impresion.
+ * -----------------------------------------------------------------------------
+ * Tecnica estandar ("imprimir un unico elemento de la pagina"), sin
+ * dependencia de ningun navegador en particular: se oculta TODO durante la
+ * impresion y se vuelve a mostrar unicamente lo marcado con
+ * `[data-document-print-root]` — el `DocumentRenderer` (`features/documents`)
+ * es el unico lugar que pone ese atributo, asi que cualquier boton/toolbar/
+ * overlay/backdrop de CUALQUIER dialogo que lo envuelva queda oculto
+ * automaticamente, sin tener que agregar `print:hidden` a mano en cada
+ * elemento de cada dialogo presente o futuro.
+ *
+ * Bloque 13.13 (fix, impresion multipagina): la version anterior forzaba
+ * `position: absolute; inset: 0` en el propio `[data-document-print-root]`
+ * — eso fija su alto EXACTO al de su bloque contenedor (el `Popup`/
+ * `DialogContent` del dialogo que lo envuelve, `position: fixed` con
+ * `max-height`/`overflow-y-auto` para la pantalla). Con `top`/`bottom`
+ * fijos en 0, el navegador nunca deja que la caja crezca mas alla de una
+ * pantalla — todo lo que no entraba (productos, subtotal, total, pie) se
+ * cortaba, sin pasar a una segunda pagina. La causa real no era el
+ * documento en si, sino el CONTENEDOR: `position: fixed` +
+ * `overflow-y-auto` + `max-height` son, los tres, incompatibles con que el
+ * navegador pagine contenido mas alto que una pantalla.
+ *
+ * `*:has([data-document-print-root])` libera a CUALQUIER ancestro (a
+ * cualquier profundidad — el Popup de `SaleReceiptDialog.tsx`, el
+ * `DialogContent` de `SaleDetailDialog.tsx`, el `WorkspacePanelContent`/
+ * `WorkspacePanelBody` de `SessionSalesDialog.tsx`, o cualquier dialogo
+ * futuro) de esas restricciones durante la impresion — sin tener que
+ * tocar cada componente de dialogo/panel uno por uno, presente o futuro.
+ * El propio `[data-document-print-root]` ya no necesita `position`/`inset`
+ * propios: liberado el contenedor, alcanza con que fluya en flujo normal
+ * (su `position` por defecto, `static`) para que el navegador pagine su
+ * contenido con normalidad.
+ *
+ * Bloque 13.14 (fix, riesgo de hoja en blanco en el resto del ERP):
+ * `body * { visibility: hidden }` era INCONDICIONAL — aplicaba en
+ * cualquier pantalla del sistema, no solo en las que muestran un
+ * comprobante. Si alguien presionaba Ctrl+P (o el menu de impresion del
+ * navegador) estando en Productos, el Dashboard, etc. — cualquier pantalla
+ * SIN ningun `[data-document-print-root]` — el resultado era una hoja en
+ * blanco: todo quedaba oculto y no habia nada que la regla siguiente
+ * volviera a mostrar. `body:has([data-document-print-root]) *` acota la
+ * regla: solo oculta todo cuando el DOM realmente contiene un documento
+ * del motor — en cualquier otra pantalla, esta hoja de estilos no hace
+ * nada y la impresion nativa del navegador se comporta con normalidad.
+ */
+/*
+ * Bloque Reportes (Centro de Análisis) — extensión aditiva del mecanismo
+ * de arriba a `[data-report-print-root]`: MISMA técnica exacta ("ocultar
+ * todo, mostrar solo la raíz marcada"), reutilizada para el botón
+ * "Imprimir" de cada página de Reportes — que imprime el Canvas Workspace
+ * ya renderizado en pantalla (KPIs/gráfico/tabla), no un `DocumentData`
+ * del Motor de Documentos (un reporte histórico no es una orden de
+ * compra/factura — no tiene sentido forzar un Builder para esto). El
+ * comportamiento de `[data-document-print-root]` no cambia en absoluto:
+ * las reglas de abajo son un `:is(...)` que agrega el segundo atributo a
+ * los mismos selectores, no un bloque paralelo con lógica propia.
+ */
+@media print {
+  body:has(:is([data-document-print-root], [data-report-print-root])) * {
+    visibility: hidden;
+  }
+
+  :is([data-document-print-root], [data-report-print-root]),
+  :is([data-document-print-root], [data-report-print-root]) * {
+    visibility: visible;
+  }
+
+  *:has(:is([data-document-print-root], [data-report-print-root])) {
+    position: static !important;
+    inset: auto !important;
+    max-height: none !important;
+    height: auto !important;
+    overflow: visible !important;
+    transform: none !important;
+  }
+
+  [data-document-print-root] {
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+
+  /* Bloque 6.3: `data-document-detail-scroll` (tabla "Detalle" del modal
+   * "Venta completada", ver `DocumentRenderer.tsx`'s `detailMaxHeight`) es
+   * un DESCENDIENTE de `[data-document-print-root]`, no un ancestro — la
+   * regla `*:has(...)` de arriba libera ancestros, no lo alcanza. Sin esta
+   * regla, su `max-height`/`overflow-y-auto` de pantalla seguiria activo
+   * al imprimir y recortaria filas de la tabla en vez de paginarlas. */
+  [data-document-detail-scroll] {
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  [data-report-print-root] {
+    margin: 0 !important;
+    box-shadow: none !important;
+  }
+
+  @page {
+    margin: 1cm;
+  }
+}

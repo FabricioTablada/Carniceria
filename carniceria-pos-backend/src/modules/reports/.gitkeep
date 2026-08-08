@@ -1,0 +1,7 @@
+# Modulo: reports
+# Responsabilidad: Reportes operativos servidos por la API. El BI pesado va por vistas SQL -> Power BI.
+#
+# Estructura esperada (patron estandar, ver ARCHITECTURE.md seccion 4):
+#   reports.routes.ts / reports.controller.ts / reports.service.ts / reports.repository.ts / reports.validation.ts / index.ts
+#
+# Pendiente de implementar.

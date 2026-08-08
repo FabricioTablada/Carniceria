@@ -1,0 +1,6 @@
+dist
+node_modules
+logs
+backups
+prisma/migrations
+coverage

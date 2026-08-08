@@ -1,0 +1,2025 @@
+// ============================================================================
+//  Prisma Schema - POS Carniceria (Costa Rica)
+//  FUENTE DE VERDAD DEL MODELO DE DATOS.
+//
+//  Convenciones (decision #2) aplicadas a las tablas segun corresponda:
+//    id          String     @id @default(uuid()) @db.Uuid
+//    sucursalId  String     @map("sucursal_id")  @db.Uuid   (donde corresponde)
+//    createdAt   DateTime   @default(now())      @map("created_at")
+//    updatedAt   DateTime   @updatedAt           @map("updated_at")
+//    deletedAt   DateTime?                       @map("deleted_at")   (soft delete)
+//    syncStatus  SyncStatus @default(PENDING)    @map("sync_status")
+//
+//  Nomenclatura: camelCase en Prisma <-> snake_case en PostgreSQL (@map/@@map),
+//  para que las tablas y columnas sigan la convencion de Postgres y sean
+//  legibles desde Power BI (decision #3).
+//
+//  Dinero: Decimal(14,2) en CRC (nunca float). Cantidades/pesos: Decimal(12,3)
+//  para soportar kilogramos con precision de gramos (decision #4 y #6).
+//
+//  El detalle y la justificacion de cada tabla estan en docs/DATABASE.md.
+// ============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  // Arquitectura de selectores, Bloque 1: habilita `type: Gin` + `ops:
+  // raw("gin_trgm_ops")` en `@@index` (ver modelos User/Category/Tax/
+  // Product/Supplier mas abajo), necesario para declarar indices de
+  // trigramas administrados por Prisma en vez de SQL suelto fuera del
+  // schema.
+  // Version 1.1, Bloque 3 (ranking del buscador CABYS): habilita el
+  // filtro `search` y el `orderBy: { _relevance: ... }` de Prisma sobre
+  // PostgreSQL (`to_tsquery`/`ts_rank` nativos) — evita tener que caer a
+  // `$queryRaw` para lograr ranking por relevancia de texto completo, ver
+  // `cabys.repository.ts::lookup`.
+  previewFeatures = ["postgresqlExtensions", "fullTextSearchPostgres"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  // Arquitectura de selectores, Bloque 1 (analisis aprobado: estrategia de
+  // busqueda = trigram + GIN, para mantener "contiene en cualquier parte
+  // del texto" con soporte de indice real). `pg_trgm` es una extension
+  // estandar de PostgreSQL (no requiere instalacion externa), habilitada
+  // aqui vía Prisma para que la migracion la cree con
+  // `CREATE EXTENSION IF NOT EXISTS pg_trgm` de forma reproducible.
+  extensions = [pg_trgm]
+}
+
+// ============================================================================
+//  ENUMS
+// ============================================================================
+
+// Estado de sincronizacion con la nube (decision #2 - preparacion Fase 2).
+enum SyncStatus {
+  PENDING
+  SYNCED
+  FAILED
+}
+
+// Bloque 4 (offline/sync): estado de un SyncJob individual en la cola de
+// salida (outbox). PROCESSING existe para detectar y reclamar trabajos que
+// quedaron a medias si el proceso se cayo/cerro en medio de un intento.
+enum SyncJobStatus {
+  PENDING
+  PROCESSING
+  SYNCED
+  FAILED
+}
+
+// Bloque 4 (offline/sync): tipo de trabajo, resuelve que handler del
+// dispatcher lo procesa (`modules/sync/sync.handlers`). Extensible sin
+// tocar el motor de la cola — la Fase 2 real (push a nube) y la
+// facturacion electronica a Hacienda se agregan como valores nuevos +
+// un handler nuevo cada una, no como infraestructura separada.
+enum SyncJobType {
+  CLOUD_PUSH
+}
+
+// Unidad de medida de un producto (decision #4: venta por peso o por unidad).
+enum UnitOfMeasure {
+  KILOGRAM
+  UNIT
+}
+
+// Clasificacion de un movimiento de inventario. La direccion (suma/resta) la
+// determina el signo de `quantity`.
+enum InventoryMovementType {
+  INITIAL // carga inicial de existencias
+  PURCHASE // entrada por compra
+  SALE // salida por venta
+  ADJUSTMENT // ajuste manual (conteo fisico)
+  WASTE // merma / desecho (relevante en carniceria)
+  RETURN // devolucion
+  TRANSFER_IN // entrada por traslado entre sucursales (Fase 2)
+  TRANSFER_OUT // salida por traslado entre sucursales (Fase 2)
+  // Modulo de Despiece (Bloque 1 — schema, sin logica todavia): mismo
+  // sentido que TRANSFER_IN/TRANSFER_OUT (IN = entra stock, OUT = sale
+  // stock), nunca al reves. PROCESSING_IN = entra cada corte/subproducto
+  // obtenido; PROCESSING_OUT = sale el insumo (canal) consumido.
+  PROCESSING_IN
+  PROCESSING_OUT
+}
+
+// Origen/causa de una merma (Bloque 5.2, "Modulo de Mermas" — infraestructura
+// base, ver analisis de los Bloques 5/5.1). A diferencia de `InventoryMovement.
+// reason` (texto libre), este es un catalogo controlado para que los reportes
+// de mermas puedan agruparse de forma confiable (ver Bloque 5.1, criterio de
+// "Reportes"/"KPIs": agrupar por texto libre no es confiable).
+// RETURNED_NOT_RESTOCKED: producto de una devolucion de cliente que no vuelve
+// a stock vendible (ver `InventoryWaste.sourceReturnItemId`).
+// PRODUCTION_ERROR/COLD_CHAIN_FAILURE: preparados desde ahora (mismo criterio
+// que `InventoryMovementType.WASTE` en su momento), sin flujo especial todavia
+// — ver analisis del Bloque 5, seccion 3.
+enum WasteReason {
+  RETURNED_NOT_RESTOCKED
+  EXPIRED
+  DAMAGED
+  PRODUCTION_ERROR
+  CUTTING_ERROR
+  PACKAGING_ERROR
+  COLD_CHAIN_FAILURE
+  // Modulo de Despiece (Bloque 1 — schema, sin logica todavia): merma
+  // NORMAL y esperada de una operacion de despiece (hueso/grasa/recorte
+  // que se desecha de verdad, sin valor comercial) — distinta de
+  // CUTTING_ERROR (un error real de corte). Ver plan v3, seccion "Merma
+  // vs. Subproducto": si el material se aprovecha (se puede vender/
+  // almacenar), NO es esto — es una salida de despiece con su propio lote.
+  PROCESSING_LOSS
+  OTHER
+}
+
+enum PurchaseStatus {
+  DRAFT
+  RECEIVED
+  CANCELLED
+}
+
+// Modulo de Despiece (Bloque 1 — schema, sin logica todavia): mismo criterio
+// exacto que PurchaseStatus. DRAFT = mientras se cargan lineas de salida/
+// merma, editable. COMPLETED = cerrado, inmutable, ya afecto inventario/
+// costos. CANCELLED = descartado desde DRAFT, nunca toco inventario.
+enum ProcessingStatus {
+  DRAFT
+  COMPLETED
+  CANCELLED
+}
+
+enum SaleStatus {
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}
+
+// Descuento aplicado al carrito completo de una venta (distinto del
+// descuento por linea ya existente en `SaleItem.discount`). NONE = sin
+// descuento de carrito.
+enum SaleDiscountType {
+  NONE
+  PERCENTAGE
+  FIXED
+}
+
+// Bloque P.1 (Motor de Promociones y Descuentos, infraestructura de
+// auditoria): origen de un descuento aplicado a una venta. Hoy solo se
+// genera MANUAL (el descuento de carrito que el cajero ya podia aplicar);
+// AUTOMATIC queda preparado para cuando exista un catalogo de promociones
+// (Promotion, todavia sin crear) que se apliquen sin intervencion del
+// cajero.
+enum PromotionSource {
+  MANUAL
+  AUTOMATIC
+}
+
+// Bloque P.3 (Motor de Promociones, catalogo administrativo): a que
+// entidad aplica una promocion. CART = carrito completo (equivalente al
+// descuento manual ya existente, generalizado como un alcance mas, no un
+// caso especial). COMBO reutiliza `PromotionProduct` con
+// `requiredQuantity` poblado (cuantas unidades de cada producto exige el
+// combo) — no existe un modelo `PromotionCombo` separado.
+enum PromotionScopeType {
+  PRODUCT
+  CATEGORY
+  COMBO
+  CART
+}
+
+// Como se calcula el beneficio de una promocion. BUY_X_PAY_Y generaliza
+// 2x1 (buyQuantity: 2, payQuantity: 1) y 3x2 (buyQuantity: 3,
+// payQuantity: 2) como el mismo mecanismo con parametros distintos, en
+// vez de dos tipos separados.
+enum PromotionEffectType {
+  PERCENTAGE
+  FIXED_AMOUNT
+  SPECIAL_PRICE
+  // PROMO-13: precio fijo POR UNIDAD (ej. "₡2.200/kg" en vez de
+  // "₡2.500/kg") -- distinto de SPECIAL_PRICE, que fija el precio TOTAL
+  // del conjunto de lineas afectadas (correcto para combos/bundles, mal
+  // calculado para productos de peso variable comprados en cantidad
+  // distinta de 1). Solo valido con `scopeType: PRODUCT`/`CATEGORY` (ver
+  // `promotions.service.ts::assertFixedPriceScope`).
+  FIXED_PRICE
+  BUY_X_PAY_Y
+}
+
+// PROMO-03 (Commercial Pricing Engine, modelo de datos): quien decide que
+// esta regla exista. INTERNAL (default) = decision propia del negocio,
+// identico al comportamiento de toda promocion existente antes de este
+// bloque. SUPPLIER_MANDATED = condicion comercial impuesta por un
+// proveedor (ej. "Martes de Pechuga", "Precio obligatorio", "Combo
+// obligatorio") — no es una mecanica nueva, esas siguen siendo
+// `scopeType`/`effectType` ya existentes; este campo solo distingue el
+// origen/motivo, ortogonal a que hace la promocion.
+enum PromotionOrigin {
+  INTERNAL
+  SUPPLIER_MANDATED
+}
+
+// PROMO-03: quien financia el descuento que recibe el cliente. NONE
+// (default) = el negocio absorbe el descuento completo, identico al
+// comportamiento de toda promocion existente antes de este bloque.
+// SUPPLIER_SUBSIDY_PER_UNIT/SUPPLIER_SUBSIDY_PERCENTAGE describen que el
+// proveedor devuelve, por unidad o por porcentaje, parte o todo el
+// descuento — el monto/porcentaje concreto vive en
+// `Promotion.supplierSubsidyValue`. Sin logica de calculo todavia (motor
+// de rentabilidad, bloque posterior) — unicamente almacenamiento.
+enum PromotionFundingType {
+  NONE
+  SUPPLIER_SUBSIDY_PER_UNIT
+  SUPPLIER_SUBSIDY_PERCENTAGE
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+// Metodos de pago frecuentes en Costa Rica (incluye SINPE Movil).
+enum PaymentMethod {
+  CASH
+  CARD
+  SINPE_MOVIL
+  TRANSFER
+  MIXED
+}
+
+enum CashSessionStatus {
+  OPEN
+  CLOSED
+}
+
+enum CashMovementType {
+  CASH_IN // ingreso manual de efectivo a caja
+  CASH_OUT // retiro / egreso de efectivo
+  // Bloque 4.1 (infraestructura base de Devoluciones): reembolso en
+  // efectivo de una devolucion (`SaleReturn`), distinto de un CASH_OUT
+  // generico para que el reporte de caja pueda distinguirlos. Sin uso
+  // real todavia (sin logica de negocio en este bloque).
+  REFUND
+  // Version 1.0.3, Bloque 1 (vuelto en efectivo): vuelto entregado en una
+  // venta en efectivo (`Sale.changeGiven` > 0). Es EXCLUSIVAMENTE un
+  // registro de trazabilidad/auditoria — `cash/service.ts::computeExpectedAmount`
+  // NO lo suma/resta (el arqueo ya excluye el vuelto al agregar
+  // `Sale.total`, no `Sale.amountPaid`, ver `cash/repository.ts::sumCashSalesAmount`).
+  // Sumarlo ahi duplicaria la resta del vuelto. Mismo patron que REFUND:
+  // creado por `sales/service.ts` dentro de la misma transaccion de la
+  // venta, nunca desde el modulo de Caja.
+  CHANGE
+}
+
+// Acciones auditables (requisito #9). Coincide con shared/constants.
+//
+// Sprint QA 3.3 (migracion aditiva, ver docs de la auditoria QA3): `SALE` e
+// `INVENTORY_MOVEMENT` quedan como valores LEGACY — nunca se eliminan ni se
+// reescriben registros historicos que ya los usan. Los eventos nuevos usan
+// las acciones especificas agregadas abajo (`SALE_VOID`, `SALE_CORRECTION`,
+// `SALE_RETURN`, `INVENTORY_WASTE`).
+enum AuditAction {
+  LOGIN
+  LOGOUT
+  CREATE
+  UPDATE
+  DELETE
+  PRICE_CHANGE
+  CASH_OPEN
+  CASH_CLOSE
+  PURCHASE
+  SALE // LEGACY: ya no se emite desde el codigo actual, se conserva por registros historicos.
+  INVENTORY_MOVEMENT // LEGACY: ya no se emite desde el codigo actual, se conserva por registros historicos.
+  SALE_VOID
+  SALE_CORRECTION
+  SALE_RETURN
+  INVENTORY_WASTE
+  // Hallazgo de seguridad #6 (auditoria 31/07/2026): eventos de seguridad
+  // NEGATIVOS — antes el AuditLog solo registraba el "happy path" (acciones
+  // exitosas), sin ningun rastro de intentos de login fallidos ni
+  // denegaciones de autorizacion, limitando severamente la deteccion de
+  // fuerza bruta o intentos de acceso indebido.
+  LOGIN_FAILED
+  ACCESS_DENIED
+}
+
+// ============================================================================
+//  ORGANIZACION Y SEGURIDAD
+// ============================================================================
+
+// Sucursal: raiz de la organizacion. Inicialmente existe una sola, pero el
+// modelo esta preparado para multiples (decision #1 y #2). No lleva
+// sucursal_id porque ELLA es la sucursal.
+model Sucursal {
+  id         String     @id @default(uuid()) @db.Uuid
+  code       String     @unique
+  name       String
+  legalId    String?    @map("legal_id") // cedula juridica
+  address    String?
+  phone      String?
+  email      String?
+  isMain     Boolean    @default(false) @map("is_main")
+  active     Boolean    @default(true)
+  createdAt  DateTime   @default(now()) @map("created_at")
+  updatedAt  DateTime   @updatedAt @map("updated_at")
+  deletedAt  DateTime?  @map("deleted_at")
+  syncStatus SyncStatus @default(PENDING) @map("sync_status")
+
+  users              User[]
+  inventories        Inventory[]
+  inventoryMovements InventoryMovement[]
+  purchases          Purchase[]
+  sales              Sale[]
+  cashRegisters      CashRegister[]
+  cashSessions       CashSession[]
+  cashMovements      CashMovement[]
+  configurations     Configuration[]
+  auditLogs          AuditLog[]
+  // Bloque 4.1 (infraestructura base de Devoluciones). Sin uso real
+  // todavia (sin logica de negocio en este bloque).
+  saleReturns        SaleReturn[]
+  // Bloque 5.2 (infraestructura base de Mermas). Sin uso real todavia.
+  inventoryWastes    InventoryWaste[]
+  // Bloque P.3 (Motor de Promociones, catalogo). Sin uso real todavia.
+  promotions         Promotion[]
+  // Bloque LOTES-01 (Modulo de Lotes). Sin uso real todavia.
+  batches            Batch[]
+  // Modulo de Despiece (Bloque 1 — schema). Sin uso real todavia.
+  processingOperations ProcessingOperation[]
+
+  @@index([syncStatus])
+  @@map("sucursales")
+}
+
+// Rol del sistema (RBAC). Es global (no depende de sucursal): un rol significa
+// lo mismo en toda la organizacion.
+model Role {
+  id          String     @id @default(uuid()) @db.Uuid
+  name        String     @unique
+  description String?
+  isSystem    Boolean    @default(false) @map("is_system") // roles base no eliminables
+  active      Boolean    @default(true)
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+  deletedAt   DateTime?  @map("deleted_at")
+  syncStatus  SyncStatus @default(PENDING) @map("sync_status")
+
+  users           User[]
+  rolePermissions RolePermission[]
+
+  @@index([syncStatus])
+  @@map("roles")
+}
+
+// Permiso granular (RBAC, ARCHITECTURE.md seccion 5: "Roles y permisos").
+// Global. Ej.: "products.create", "sales.void".
+model Permission {
+  id          String     @id @default(uuid()) @db.Uuid
+  code        String     @unique
+  description String?
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+  deletedAt   DateTime?  @map("deleted_at")
+  syncStatus  SyncStatus @default(PENDING) @map("sync_status")
+
+  rolePermissions RolePermission[]
+
+  @@index([syncStatus])
+  @@map("permissions")
+}
+
+// Tabla puente Rol <-> Permiso (relacion muchos a muchos). Al ser una
+// asociacion pura, no usa borrado logico: la relacion se crea o se elimina.
+model RolePermission {
+  id           String   @id @default(uuid()) @db.Uuid
+  roleId       String   @map("role_id") @db.Uuid
+  permissionId String   @map("permission_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+// Usuario del sistema. Pertenece a una sucursal y tiene un rol. La contrasena
+// SIEMPRE se almacena como hash bcrypt (nunca texto plano). El campo existe en
+// el modelo; su uso (login) se implementara en un sprint posterior.
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  sucursalId   String     @map("sucursal_id") @db.Uuid
+  roleId       String     @map("role_id") @db.Uuid
+  username     String     @unique
+  email        String?    @unique
+  fullName     String     @map("full_name")
+  passwordHash String     @map("password_hash") // bcrypt
+  active       Boolean    @default(true)
+  // Hallazgo de seguridad #3 (auditoria 31/07/2026): incrementado en cada
+  // desactivacion, cambio de rol o cambio de contrasena (`users.service.ts`).
+  // Viaja embebido en el payload del JWT (access y refresh); `auth.service.ts`
+  // lo compara contra este valor UNICAMENTE en `refresh()` (no en cada
+  // request, para no perder el beneficio de un access token sin estado) —
+  // si no coincide, la sesion se trata como invalida y se fuerza un nuevo
+  // login. Acota a lo sumo `JWT_EXPIRES_IN` (15 min por defecto) la ventana
+  // en la que un usuario desactivado/degradado sigue operando con privilegios
+  // viejos.
+  tokenVersion Int        @default(0) @map("token_version")
+  lastLoginAt  DateTime?  @map("last_login_at")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  deletedAt    DateTime?  @map("deleted_at")
+  syncStatus   SyncStatus @default(PENDING) @map("sync_status")
+
+  sucursal Sucursal @relation(fields: [sucursalId], references: [id])
+  role     Role     @relation(fields: [roleId], references: [id])
+
+  sales              Sale[]
+  purchases          Purchase[]
+  inventoryMovements InventoryMovement[]
+  openedSessions     CashSession[]          @relation("SessionOpenedBy")
+  closedSessions     CashSession[]          @relation("SessionClosedBy")
+  cashMovements      CashMovement[]
+  auditLogs          AuditLog[]
+  refreshTokens      RefreshToken[]
+  // Bloque 4.1 (infraestructura base de Devoluciones): quien PROCESA la
+  // devolucion (no necesariamente el cajero de la venta original). Sin uso
+  // real todavia (sin logica de negocio en este bloque).
+  saleReturns        SaleReturn[]
+  // Bloque 5.2 (infraestructura base de Mermas): quien REGISTRA la merma.
+  // Sin uso real todavia (sin logica de negocio en este bloque).
+  inventoryWastes    InventoryWaste[]
+  // Bloque P.1 (Motor de Promociones, infraestructura de auditoria): quien
+  // APLICO un descuento manual (`SaleAppliedPromotion.source: MANUAL`).
+  appliedPromotions  SaleAppliedPromotion[]
+  // Modulo de Despiece (Bloque 1 — schema): quien REGISTRA/COMPLETA la
+  // operacion. Sin uso real todavia.
+  processingOperations ProcessingOperation[]
+
+  @@index([sucursalId])
+  @@index([roleId])
+  @@index([syncStatus])
+  // Arquitectura de selectores, Bloque 1: indice de trigramas sobre
+  // `fullName` — el campo usado como `label` por el patron de lookup
+  // (`shared/utils/lookup.ts`) para el selector de usuarios/cajeros.
+  // Acelera `ILIKE '%termino%'` sin necesidad de indexar en minusculas por
+  // separado (pg_trgm da soporte nativo a ILIKE, ver analisis aprobado).
+  @@index([fullName(ops: raw("gin_trgm_ops"))], type: Gin, map: "users_full_name_trgm_idx")
+  @@map("users")
+}
+
+// ============================================================================
+//  CATALOGO (compartido entre sucursales)
+//  Productos, categorias, impuestos y proveedores NO llevan sucursal_id: el
+//  catalogo es central y se comparte. Lo que es por-sucursal es la EXISTENCIA
+//  (Inventory) y las TRANSACCIONES.
+// ============================================================================
+
+// Categoria de producto. Soporta jerarquia opcional (padre/hijas).
+model Category {
+  id          String     @id @default(uuid()) @db.Uuid
+  name        String     @unique
+  description String?
+  // Color personalizado de la categoria (hex, ej. "#3B82F6") — opcional.
+  // `null` = sin color propio, el frontend sigue resolviendo un color
+  // deterministico por `id` (`getCategoryColor`, sin cambios) como
+  // compatibilidad con las categorias existentes.
+  color       String?    @db.VarChar(7)
+  parentId    String?    @map("parent_id") @db.Uuid
+  active      Boolean    @default(true)
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+  deletedAt   DateTime?  @map("deleted_at")
+  syncStatus  SyncStatus @default(PENDING) @map("sync_status")
+
+  parent              Category?           @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children            Category[]          @relation("CategoryHierarchy")
+  products            Product[]
+  // Bloque P.3 (Motor de Promociones, catalogo). Sin uso real todavia.
+  promotionCategories PromotionCategory[]
+
+  @@index([parentId])
+  @@index([syncStatus])
+  // Arquitectura de selectores, Bloque 1: indice de trigramas sobre `name`
+  // — campo `label` del patron de lookup para el selector de categorias.
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "categories_name_trgm_idx")
+  @@map("categories")
+}
+
+// Impuesto configurable (decision #7). La tasa NUNCA esta fija en el codigo:
+// vive aqui y se puede editar. `rate` es porcentaje (ej. 13.00). Global.
+model Tax {
+  id         String     @id @default(uuid()) @db.Uuid
+  code       String     @unique
+  name       String
+  rate       Decimal    @db.Decimal(5, 2) // porcentaje, ej. 13.00
+  isDefault  Boolean    @default(false) @map("is_default")
+  active     Boolean    @default(true)
+  createdAt  DateTime   @default(now()) @map("created_at")
+  updatedAt  DateTime   @updatedAt @map("updated_at")
+  deletedAt  DateTime?  @map("deleted_at")
+  syncStatus SyncStatus @default(PENDING) @map("sync_status")
+
+  products      Product[]
+  saleItems     SaleItem[]
+  purchaseItems PurchaseItem[]
+
+  @@index([syncStatus])
+  // Arquitectura de selectores, Bloque 1: indices de trigramas sobre `name`
+  // (campo `label` del lookup) y `code` (busqueda alternativa por codigo,
+  // ej. "IVA") para el selector de impuestos.
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "taxes_name_trgm_idx")
+  @@index([code(ops: raw("gin_trgm_ops"))], type: Gin, map: "taxes_code_trgm_idx")
+  @@map("taxes")
+}
+
+// Producto. Soporta venta por kilogramo o por unidad, codigo de barras y peso
+// variable de balanza (decision #4). El precio de venta vive aqui (catalogo
+// compartido); un override por sucursal se puede agregar en el futuro sin
+// romper el modelo.
+model Product {
+  id                       String        @id @default(uuid()) @db.Uuid
+  categoryId               String        @map("category_id") @db.Uuid
+  taxId                    String        @map("tax_id") @db.Uuid
+  sku                      String?       @unique
+  barcode                  String?       @unique
+  name                     String
+  description              String?
+  // Fase 16 (ampliacion de catalogo): columna aditiva, nullable — un
+  // producto sin imagen sigue siendo perfectamente valido (comportamiento
+  // identico al de antes de esta columna). Solo almacena la URL; el
+  // frontend NO se modifica en este bloque para consumirla (queda para un
+  // bloque posterior e independiente).
+  imageUrl                 String?       @map("image_url")
+  unitOfMeasure            UnitOfMeasure @default(KILOGRAM) @map("unit_of_measure")
+  salePrice                Decimal       @map("sale_price") @db.Decimal(14, 2)
+  cost                     Decimal       @default(0) @db.Decimal(14, 2) // costo de referencia
+  // Bloque 14.4 (Mermas esperadas): porcentaje esperado de merma del
+  // producto (0-100), base para el calculo futuro de costos reales — sin
+  // uso real todavia (columna aditiva, mismo criterio ya aprobado para
+  // `imageUrl`: el frontend NO se modifica en este bloque para consumirla).
+  expectedWastePercent     Decimal       @default(0) @map("expected_waste_percent") @db.Decimal(5, 2)
+  // Bloque COST-01.1: si este producto participa de la regla de "costo
+  // efectivo por merma esperada" (CostEngine, `shared/services/costEngine/`).
+  // `false` por defecto — sin uso real todavia (el CostEngine no esta
+  // integrado con ningun consumidor en este bloque); un producto existente
+  // con este campo en `false` funciona exactamente igual que hoy.
+  applyExpectedWasteToCost Boolean       @default(false) @map("apply_expected_waste_to_cost")
+  isVariableWeight         Boolean       @default(false) @map("is_variable_weight") // codigo de balanza
+  trackInventory           Boolean       @default(true) @map("track_inventory")
+  // Bloque LOTES-01 (Modulo de Lotes, infraestructura base): `false` por
+  // defecto — un producto existente con este campo en `false` funciona
+  // exactamente igual que hoy (sin lotes). Cuando es `true`, las compras de
+  // este producto generan un `Batch` automaticamente al recibirse
+  // (LOTES-02, sin logica todavia en este bloque) y las ventas deberan
+  // resolver de que lote descontar (LOTES-03). Columna puramente aditiva,
+  // sin backfill.
+  requiresBatch            Boolean       @default(false) @map("requires_batch")
+  // Bloque 7.6: ID del item correspondiente en Alegra, resuelto UNA sola
+  // vez (`modules/integrations/alegra`, `resolveProductAlegraId`) y
+  // reutilizado siempre despues — nunca se vuelve a buscar/crear en Alegra
+  // una vez que este campo tiene valor. Columna puramente aditiva, sin
+  // backfill; `null` = todavia no vinculado (comportamiento identico al de
+  // antes de esta columna).
+  alegraProductId          String?       @map("alegra_product_id")
+  // Bloque 7.12: codigo CABYS (Catalogo de Bienes y Servicios, Costa Rica),
+  // 13 digitos, obligatorio por Hacienda para emitir factura electronica
+  // (enviado como `productKey` a Alegra, `alegra.service.ts`). Nullable a
+  // nivel de columna: la base actual solo tiene datos de prueba (sin
+  // backfill), pero el formulario de Productos lo exige en creacion — ver
+  // `products.validation.ts`.
+  cabysCode                String?       @map("cabys_code")
+  active                   Boolean       @default(true)
+  createdAt                DateTime      @default(now()) @map("created_at")
+  updatedAt                DateTime      @updatedAt @map("updated_at")
+  deletedAt                DateTime?     @map("deleted_at")
+  syncStatus               SyncStatus    @default(PENDING) @map("sync_status")
+
+  category Category @relation(fields: [categoryId], references: [id])
+  tax      Tax      @relation(fields: [taxId], references: [id])
+
+  inventories        Inventory[]
+  inventoryMovements InventoryMovement[]
+  saleItems          SaleItem[]
+  purchaseItems      PurchaseItem[]
+  // Bloque 5.2 (infraestructura base de Mermas). Sin uso real todavia.
+  inventoryWastes    InventoryWaste[]
+  // Bloque P.3 (Motor de Promociones, catalogo). Sin uso real todavia (sin
+  // motor de reglas en este bloque).
+  promotionProducts  PromotionProduct[]
+  // Bloque LOTES-01 (Modulo de Lotes). Sin uso real todavia (la creacion
+  // automatica de lotes es LOTES-02).
+  batches            Batch[]
+  // Modulo de Despiece (Bloque 1 — schema). Sin uso real todavia.
+  // "ProcessingInput": este producto es el insumo (ej. la canal) de una
+  // operacion de despiece. "ProcessingOutput": este producto es un corte/
+  // subproducto de salida de una linea de despiece.
+  processingOperationsAsInput ProcessingOperation[]  @relation("ProcessingInput")
+  processingOutputItems       ProcessingOutputItem[] @relation("ProcessingOutput")
+
+  @@index([categoryId])
+  @@index([taxId])
+  @@index([syncStatus])
+  // Arquitectura de selectores, Bloque 1: indices de trigramas sobre `name`
+  // (campo `label` del lookup) y `sku` (busqueda alternativa, ej. cajero
+  // escaneando/tecleando codigo) para el selector de productos — el modulo
+  // con el sintoma original ("108 vs 100").
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "products_name_trgm_idx")
+  @@index([sku(ops: raw("gin_trgm_ops"))], type: Gin, map: "products_sku_trgm_idx")
+  @@map("products")
+}
+
+// ============================================================================
+//  MOTOR DE PROMOCIONES Y DESCUENTOS — CATALOGO (Bloque P.3)
+//  `Promotion` es la unica entidad de CONFIGURACION del motor — separada a
+//  proposito de `SaleAppliedPromotion` (Bloque P.1, tabla de AUDITORIA:
+//  que ocurrio, nunca que DEBERIA ocurrir) y del futuro motor de reglas
+//  (que leera este catalogo, nunca vivira dentro de el). Sin logica de
+//  calculo, sin integracion al POS, sin ejecucion automatica en este
+//  bloque — unicamente el catalogo administrativo.
+// ============================================================================
+
+// Promocion configurable. `scopeType`+`effectType` son ejes ORTOGONALES
+// (ver analisis de arquitectura aprobado): a que aplica vs. como reduce el
+// precio, en vez de un tipo distinto por cada uno de los 12 escenarios de
+// negocio. Sin logica de aplicacion todavia — un futuro motor de reglas
+// (bloque posterior) es quien leera estos campos para decidir que
+// promociones aplican a una venta; esta tabla solo los almacena.
+model Promotion {
+  id          String  @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+
+  scopeType  PromotionScopeType  @map("scope_type")
+  effectType PromotionEffectType @map("effect_type")
+
+  // Porcentaje (PERCENTAGE), monto fijo (FIXED_AMOUNT) o precio final
+  // (SPECIAL_PRICE) segun `effectType`. Nulo para BUY_X_PAY_Y, que usa
+  // `buyQuantity`/`payQuantity` en su lugar — la validacion de que
+  // combinacion de campos corresponde a cada `effectType` vive en
+  // `promotions.validation.ts`/`promotions.service.ts`, no en el esquema.
+  effectValue Decimal? @map("effect_value") @db.Decimal(14, 2)
+  // Solo poblados cuando `effectType: BUY_X_PAY_Y` (2x1 = 2/1, 3x2 = 3/2).
+  buyQuantity Int?     @map("buy_quantity")
+  payQuantity Int?     @map("pay_quantity")
+
+  // Condicion minima de cantidad/peso para que la promocion aplique (ej.
+  // "mas de 5 kg"). Nulo = sin condicion de cantidad.
+  minQuantity Decimal? @map("min_quantity") @db.Decimal(12, 3)
+
+  // Vigencia por fecha. Nulos = sin limite en ese extremo.
+  startDate  DateTime?   @map("start_date")
+  endDate    DateTime?   @map("end_date")
+  // Vigencia por franja horaria del dia (zona horaria de la sucursal,
+  // America/Costa_Rica — ver analisis de arquitectura, "Riesgos"). Nulos =
+  // valida todo el dia.
+  startTime  DateTime?   @map("start_time") @db.Time
+  endTime    DateTime?   @map("end_time") @db.Time
+  // Dias de la semana en que aplica. Array vacio/nulo = todos los dias.
+  daysOfWeek DayOfWeek[] @map("days_of_week")
+
+  // Orden de evaluacion entre promociones candidatas (mayor = se evalua
+  // primero) y reglas de combinacion — sin logica que las use todavia,
+  // solo almacenamiento; el motor de reglas futuro las interpreta.
+  priority       Int     @default(0)
+  stackable      Boolean @default(false)
+  exclusiveGroup String? @map("exclusive_group")
+
+  active Boolean @default(true)
+
+  // Nulo = aplica a todas las sucursales. Decision de negocio abierta
+  // (ver analisis de arquitectura, "Riesgos") — el esquema soporta ambos
+  // casos sin bloquear la implementacion.
+  sucursalId String? @map("sucursal_id") @db.Uuid
+
+  // PROMO-03 (Commercial Pricing Engine, modelo de datos): campos
+  // aditivos, todos nulos/con default seguro — ninguna promocion
+  // existente requiere backfill. Sin logica de negocio todavia (motor de
+  // rentabilidad, PromotionEngine, endpoints y frontend sin tocar en este
+  // bloque); unicamente almacenamiento.
+  //
+  // Proveedor que origina/financia la promocion. Nulo = sin proveedor
+  // asociado (promocion propia del negocio) — caso de toda promocion
+  // existente hoy.
+  supplierId           String?              @map("supplier_id") @db.Uuid
+  // Por que existe esta regla: decision propia (default) o condicion
+  // impuesta por el proveedor. Ortogonal a `scopeType`/`effectType` (que
+  // hace la promocion) — evita un `effectType` nuevo por cada variante
+  // "obligatoria" del proveedor.
+  commercialOrigin     PromotionOrigin      @default(INTERNAL) @map("commercial_origin")
+  // Quien financia el descuento que ve el cliente. Default `NONE` =
+  // comportamiento identico al actual (el negocio absorbe el descuento
+  // completo).
+  fundingType          PromotionFundingType @default(NONE) @map("funding_type")
+  // Monto (SUPPLIER_SUBSIDY_PER_UNIT) o porcentaje
+  // (SUPPLIER_SUBSIDY_PERCENTAGE) que el proveedor devuelve — significado
+  // depende de `fundingType`, mismo criterio ya usado por `effectValue`
+  // segun `effectType`. Nulo cuando `fundingType: NONE` (no se colapsa a
+  // 0, misma razon que `expectedWastePercent` en Product: "sin dato" no es
+  // "monto cero").
+  supplierSubsidyValue Decimal?             @map("supplier_subsidy_value") @db.Decimal(14, 2)
+
+  createdAt  DateTime   @default(now()) @map("created_at")
+  updatedAt  DateTime   @updatedAt @map("updated_at")
+  deletedAt  DateTime?  @map("deleted_at")
+  syncStatus SyncStatus @default(PENDING) @map("sync_status")
+
+  sucursal          Sucursal?              @relation(fields: [sucursalId], references: [id])
+  // PROMO-03: opcional, mismo criterio que `sucursal` arriba — nulo = sin
+  // proveedor asociado.
+  supplier          Supplier?              @relation(fields: [supplierId], references: [id])
+  products          PromotionProduct[]
+  categories        PromotionCategory[]
+  // Deuda tecnica del motor de promociones, Bloque 2: lado inverso de la
+  // FK aditiva `SaleAppliedPromotion.promotionId` — sin uso en consultas
+  // todavia (eso queda para un bloque posterior), solo la relacion
+  // estructural que Prisma requiere para declarar la FK del otro lado.
+  appliedPromotions SaleAppliedPromotion[]
+
+  @@index([active])
+  @@index([scopeType])
+  @@index([sucursalId])
+  // PROMO-03: previsto para filtrado/agregacion por proveedor (reportes
+  // de aporte de proveedor, bloque posterior) — mismo criterio que el
+  // indice ya existente sobre `sucursalId`.
+  @@index([supplierId])
+  @@map("promotions")
+}
+
+// Productos asociados a una promocion. Doble proposito segun `scopeType`
+// de la promocion duena: `scopeType: PRODUCT` (elegibilidad simple, sin
+// cantidad) o `scopeType: COMBO` (`requiredQuantity` indica cuantas
+// unidades de ESE producto exige el combo, ej. "2 Chuletas + 1 Coca" son
+// dos filas, una con requiredQuantity 2 y otra con requiredQuantity 1).
+// No existe un modelo `PromotionCombo` separado — un combo ES una
+// `Promotion` con `scopeType: COMBO` y varias filas aca.
+model PromotionProduct {
+  id               String   @id @default(uuid()) @db.Uuid
+  promotionId      String   @map("promotion_id") @db.Uuid
+  productId        String   @map("product_id") @db.Uuid
+  requiredQuantity Decimal? @map("required_quantity") @db.Decimal(12, 3)
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  product   Product   @relation(fields: [productId], references: [id])
+
+  @@unique([promotionId, productId])
+  @@index([productId])
+  @@map("promotion_products")
+}
+
+// Categorias asociadas a una promocion con `scopeType: CATEGORY` (ej.
+// "toda la categoria Bebidas").
+model PromotionCategory {
+  id          String @id @default(uuid()) @db.Uuid
+  promotionId String @map("promotion_id") @db.Uuid
+  categoryId  String @map("category_id") @db.Uuid
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  category  Category  @relation(fields: [categoryId], references: [id])
+
+  @@unique([promotionId, categoryId])
+  @@index([categoryId])
+  @@map("promotion_categories")
+}
+
+// Proveedor. Global (compra centralizada). En CR se identifica por cedula
+// juridica.
+model Supplier {
+  id          String     @id @default(uuid()) @db.Uuid
+  name        String
+  legalId     String?    @unique @map("legal_id")
+  contactName String?    @map("contact_name")
+  phone       String?
+  email       String?
+  address     String?
+  active      Boolean    @default(true)
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+  deletedAt   DateTime?  @map("deleted_at")
+  syncStatus  SyncStatus @default(PENDING) @map("sync_status")
+
+  purchases  Purchase[]
+  // PROMO-03 (Commercial Pricing Engine, modelo de datos): lado inverso de
+  // la FK aditiva `Promotion.supplierId` — sin uso en consultas todavia
+  // (motor de rentabilidad, bloque posterior), solo la relacion
+  // estructural que Prisma requiere para declarar la FK del otro lado.
+  promotions Promotion[]
+  // Bloque LOTES-01 (Modulo de Lotes): lado inverso de la FK aditiva
+  // `Batch.supplierId` (snapshot, no derivada via purchaseItem->purchase).
+  // Sin uso en consultas todavia (la creacion automatica es LOTES-02).
+  batches    Batch[]
+
+  @@index([syncStatus])
+  // Arquitectura de selectores, Bloque 1: indice de trigramas sobre `name`
+  // — campo `label` del patron de lookup para el selector de proveedores
+  // (hoy sin ningun picker con busqueda, ver analisis aprobado).
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "suppliers_name_trgm_idx")
+  @@map("suppliers")
+}
+
+// Bloque 8.1 (analisis aprobado): tipos de identificacion soportados por
+// Alegra Costa Rica (mismo catalogo ya confirmado real durante el Bloque
+// 7.13, `developer.alegra.com/docs/costa-rica`) — Cedula fisica/juridica,
+// DIMEX, NITE, Pasaporte extranjero.
+enum CustomerIdentificationType {
+  CF
+  CJ
+  DIMEX
+  NITE
+  PE
+}
+
+// Bloque 8.2: Cliente. Catalogo UNICO para toda la empresa (aclaracion de
+// producto: el ERP opera con una unica sucursal, sin `sucursalId` ni
+// logica multi-sucursal). Sin relacion a `Sale`/`integrations/alegra`
+// todavia — ver Bloques 8.3/8.4, fuera de alcance de este bloque.
+model Customer {
+  id                   String                     @id @default(uuid()) @db.Uuid
+  name                 String
+  identificationType   CustomerIdentificationType @map("identification_type")
+  identificationNumber String                     @map("identification_number")
+  email                String?
+  phone                String?
+  address              String?
+  active               Boolean                    @default(true)
+  // Bloque 8.4: ID del contacto correspondiente en Alegra, resuelto y
+  // persistido UNA sola vez — mismo patron exacto que
+  // `Product.alegraProductId` (Bloque 7.6). `null` = no vinculado todavia
+  // (comportamiento identico al de antes de esta columna).
+  alegraContactId      String?                    @map("alegra_contact_id")
+  createdAt            DateTime                   @default(now()) @map("created_at")
+  updatedAt            DateTime                   @updatedAt @map("updated_at")
+  deletedAt            DateTime?                  @map("deleted_at")
+  syncStatus           SyncStatus                 @default(PENDING) @map("sync_status")
+
+  // Bloque 8.3: lado inverso de la FK aditiva `Sale.customerId` — sin uso
+  // en consultas todavia de este lado (Customer no expone sus ventas en
+  // este bloque), solo la relacion estructural que Prisma requiere.
+  sales Sale[]
+
+  // Ajuste aprobado del Bloque 8.2: unicidad por (tipo, numero) de
+  // identificacion, no solo por numero — dos tipos distintos podrian, en
+  // teoria, compartir el mismo numero sin ser el mismo cliente.
+  @@unique([identificationType, identificationNumber])
+  @@index([syncStatus])
+  // Arquitectura de selectores, Bloque 1: mismo criterio que `Supplier` —
+  // indice de trigramas sobre `name` para el futuro lookup/selector.
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "customers_name_trgm_idx")
+  @@map("customers")
+}
+
+// ============================================================================
+//  INVENTARIO (por sucursal)
+// ============================================================================
+
+// Existencia actual de un producto en una sucursal. Una fila por
+// (producto, sucursal). Es el "saldo"; los cambios los generan los movimientos.
+model Inventory {
+  id           String     @id @default(uuid()) @db.Uuid
+  sucursalId   String     @map("sucursal_id") @db.Uuid
+  productId    String     @map("product_id") @db.Uuid
+  quantity     Decimal    @default(0) @db.Decimal(12, 3) // soporta kg con gramos
+  reorderPoint Decimal?   @map("reorder_point") @db.Decimal(12, 3)
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  deletedAt    DateTime?  @map("deleted_at")
+  syncStatus   SyncStatus @default(PENDING) @map("sync_status")
+
+  sucursal Sucursal @relation(fields: [sucursalId], references: [id])
+  product  Product  @relation(fields: [productId], references: [id])
+
+  @@unique([productId, sucursalId])
+  @@index([sucursalId])
+  @@index([syncStatus])
+  @@map("inventory")
+}
+
+// Movimiento de inventario: registro inmutable de cada cambio de existencias.
+// `quantity` es con signo (positivo = entra, negativo = sale). `balanceAfter`
+// guarda el saldo resultante para trazabilidad. `referenceType`/`referenceId`
+// enlazan de forma flexible con la venta/compra/ajuste que lo origino.
+model InventoryMovement {
+  id            String                @id @default(uuid()) @db.Uuid
+  sucursalId    String                @map("sucursal_id") @db.Uuid
+  productId     String                @map("product_id") @db.Uuid
+  userId        String                @map("user_id") @db.Uuid
+  type          InventoryMovementType
+  quantity      Decimal               @db.Decimal(12, 3) // con signo
+  balanceAfter  Decimal               @map("balance_after") @db.Decimal(12, 3)
+  referenceType String?               @map("reference_type") // "sale" | "purchase" | "adjustment"
+  referenceId   String?               @map("reference_id") @db.Uuid
+  // Bloque LOTES-01 (Modulo de Lotes): nullable -- `null` para todo el
+  // historial actual y para cualquier movimiento futuro de un producto sin
+  // `Product.requiresBatch`. Cuando esta presente, indica que ESTE
+  // movimiento puntual tambien debe reflejarse en `Batch.availableQuantity`
+  // (ver `shared/services/inventoryMovement.service.ts`) -- es el mecanismo
+  // que mantiene el invariante `SUM(Batch.availableQuantity ACTIVA) =
+  // Inventory.quantity`. Sin logica de negocio todavia en este bloque
+  // (LOTES-02/03 son quienes empiezan a pasarlo).
+  batchId       String?               @map("batch_id") @db.Uuid
+  reason        String?
+  createdAt     DateTime              @default(now()) @map("created_at")
+  updatedAt     DateTime              @updatedAt @map("updated_at")
+  deletedAt     DateTime?             @map("deleted_at")
+  syncStatus    SyncStatus            @default(PENDING) @map("sync_status")
+
+  sucursal Sucursal @relation(fields: [sucursalId], references: [id])
+  product  Product  @relation(fields: [productId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+  batch    Batch?   @relation(fields: [batchId], references: [id])
+
+  @@index([sucursalId])
+  @@index([productId])
+  @@index([type])
+  @@index([syncStatus])
+  @@index([referenceType, referenceId])
+  @@index([batchId])
+  @@map("inventory_movements")
+}
+
+// ============================================================================
+//  COMPRAS
+// ============================================================================
+
+// Compra (encabezado). Los totales se guardan calculados para no depender de
+// recalculo y preservar el historico.
+model Purchase {
+  id             String         @id @default(uuid()) @db.Uuid
+  sucursalId     String         @map("sucursal_id") @db.Uuid
+  supplierId     String         @map("supplier_id") @db.Uuid
+  userId         String         @map("user_id") @db.Uuid
+  documentNumber String?        @map("document_number") // factura del proveedor
+  status         PurchaseStatus @default(DRAFT)
+  purchaseDate   DateTime       @default(now()) @map("purchase_date")
+  subtotal       Decimal        @default(0) @db.Decimal(14, 2)
+  taxTotal       Decimal        @default(0) @map("tax_total") @db.Decimal(14, 2)
+  total          Decimal        @default(0) @db.Decimal(14, 2)
+  notes          String?
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+  deletedAt      DateTime?      @map("deleted_at")
+  syncStatus     SyncStatus     @default(PENDING) @map("sync_status")
+
+  sucursal Sucursal       @relation(fields: [sucursalId], references: [id])
+  supplier Supplier       @relation(fields: [supplierId], references: [id])
+  user     User           @relation(fields: [userId], references: [id])
+  items    PurchaseItem[]
+
+  @@index([sucursalId])
+  @@index([supplierId])
+  @@index([status])
+  @@index([syncStatus])
+  @@index([purchaseDate])
+  @@map("purchases")
+}
+
+// Detalle de compra (linea). `unitCost` y `taxRate` se guardan como SNAPSHOT al
+// momento de la compra, para que el historico no cambie si luego cambia el
+// costo o el impuesto del producto.
+model PurchaseItem {
+  id                   String     @id @default(uuid()) @db.Uuid
+  purchaseId           String     @map("purchase_id") @db.Uuid
+  productId            String     @map("product_id") @db.Uuid
+  taxId                String?    @map("tax_id") @db.Uuid
+  quantity             Decimal    @db.Decimal(12, 3)
+  unitCost             Decimal    @map("unit_cost") @db.Decimal(14, 2)
+  taxRate              Decimal    @map("tax_rate") @db.Decimal(5, 2) // snapshot
+  // Bloque COST-06.1 (merma por linea de compra) / LOTES-01 (Modulo de
+  // Lotes): merma esperada de ESTE lote/recepcion especifica, independiente
+  // de `Product.expectedWastePercent` (el valor POR DEFECTO del producto,
+  // que este campo NUNCA modifica). Nullable: la mayoria de lineas no la
+  // especifican, y `null` significa "sin dato de lote", nunca "0%". La
+  // arquitectura de lotes ya existe (`Batch.expectedWastePercent`, mismo
+  // Decimal(5,2)) pero este campo todavia no se copia hacia alli -- eso es
+  // LOTES-02 (creacion automatica de `Batch` al recibir la compra).
+  expectedWastePercent Decimal?   @map("expected_waste_percent") @db.Decimal(5, 2)
+  // Bloque LOTES-09 (integracion completa con Compras): trazabilidad del
+  // lote de ESTA recepcion, capturada ANTES de recibir la compra --
+  // `createBatchesForReceivedPurchase` (LOTES-02) los propaga tal cual al
+  // `Batch` que crea automaticamente. Nullable: solo tienen sentido cuando
+  // el producto de la linea tiene `Product.requiresBatch = true`, y aun asi
+  // son opcionales (mismo criterio que `expectedWastePercent` -- un dato de
+  // LINEA, nunca del producto). Mismos nombres y mismo tipo que sus
+  // homologos en `Batch` (`supplierLotCode`/`productionDate`/`expiryDate`,
+  // ver ese modelo mas abajo) para que la propagacion sea 1 a 1 sin
+  // traduccion.
+  supplierLotCode      String?    @map("supplier_lot_code")
+  productionDate       DateTime?  @map("production_date")
+  expiryDate           DateTime?  @map("expiry_date")
+  lineSubtotal         Decimal    @map("line_subtotal") @db.Decimal(14, 2)
+  lineTax              Decimal    @map("line_tax") @db.Decimal(14, 2)
+  lineTotal            Decimal    @map("line_total") @db.Decimal(14, 2)
+  createdAt            DateTime   @default(now()) @map("created_at")
+  updatedAt            DateTime   @updatedAt @map("updated_at")
+  deletedAt            DateTime?  @map("deleted_at")
+  syncStatus           SyncStatus @default(PENDING) @map("sync_status")
+
+  purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id])
+  tax      Tax?     @relation(fields: [taxId], references: [id])
+  // Bloque LOTES-01 (Modulo de Lotes): lado inverso de la FK opcional y
+  // unica `Batch.purchaseItemId` (a lo sumo un lote por linea de compra).
+  // Sin uso real todavia -- la creacion automatica es LOTES-02.
+  batch    Batch?
+
+  @@index([purchaseId])
+  @@index([productId])
+  @@map("purchase_items")
+}
+
+// ============================================================================
+//  MODULO DE LOTES (Bloque LOTES-01)
+//  `Batch` es una capa de DESGLOSE de `Inventory.quantity`, no un reemplazo:
+//  `Inventory` sigue siendo la unica fuente de verdad de "cuanto stock hay"
+//  (reportes, POS, bajo-stock, todos sin cambios). El invariante
+//  SUM(Batch.availableQuantity ACTIVA) = Inventory.quantity se mantiene por
+//  construccion, nunca por un job de reconciliacion: todo movimiento que
+//  toca `Inventory.quantity` para un producto con `Product.requiresBatch`
+//  debe tambien tocar `Batch.availableQuantity`, en la MISMA transaccion,
+//  via `shared/services/inventoryMovement.service.ts` (parametro opcional
+//  `batchId` en `recordMovement`/`recordMovements`).
+//
+//  Sin logica de negocio en este bloque (LOTES-01 es solo schema +
+//  infraestructura): la creacion automatica desde Compras es LOTES-02, la
+//  seleccion FEFO/FIFO en Ventas es LOTES-03.
+// ============================================================================
+
+enum BatchStatus {
+  ACTIVE
+  DEPLETED
+  EXPIRED
+  BLOCKED
+}
+
+// `purchaseItemId` nullable + `@unique`: a lo sumo un lote por linea de
+// compra (mismo patron ya usado en `InventoryWaste.sourceReturnItemId`) --
+// nullable para permitir un "lote de reconciliacion" (LOTES-02) cuando un
+// producto ya tenia stock antes de activar `Product.requiresBatch`.
+// `supplierId` esta denormalizado (snapshot, no derivado via
+// purchaseItem->purchase->supplier): mismo criterio ya usado en
+// `SaleItem.unitCost`/`SaleAppliedPromotion` para no perder el dato si la
+// compra de origen se edita despues.
+model Batch {
+  id                   String      @id @default(uuid()) @db.Uuid
+  code                 String      @unique
+  supplierLotCode      String?     @map("supplier_lot_code")
+  productId            String      @map("product_id") @db.Uuid
+  sucursalId           String      @map("sucursal_id") @db.Uuid
+  purchaseItemId       String?     @unique @map("purchase_item_id") @db.Uuid
+  supplierId           String?     @map("supplier_id") @db.Uuid
+  receivedAt           DateTime    @map("received_at")
+  productionDate       DateTime?   @map("production_date")
+  expiryDate           DateTime?   @map("expiry_date")
+  initialQuantity      Decimal     @map("initial_quantity") @db.Decimal(12, 3)
+  availableQuantity    Decimal     @map("available_quantity") @db.Decimal(12, 3)
+  unitCost             Decimal     @map("unit_cost") @db.Decimal(14, 2)
+  // Snapshot de `PurchaseItem.expectedWastePercent` al crear el lote
+  // (LOTES-02, no en este bloque) -- mismo Decimal(5,2), nunca se
+  // recalcula despues. `null` = sin dato de lote, nunca se infiere 0.
+  expectedWastePercent Decimal?    @map("expected_waste_percent") @db.Decimal(5, 2)
+  status               BatchStatus @default(ACTIVE)
+  closedAt             DateTime?   @map("closed_at")
+  notes                String?
+  // Modulo de Despiece (Bloque 1 — schema, sin logica todavia): trazabilidad
+  // al lote de origen cuando este lote nacio de una operacion de despiece
+  // (un corte de la canal). `null` = lote normal, sin origen de despiece —
+  // comportamiento identico al de antes de esta columna (columna aditiva).
+  parentBatchId        String?     @map("parent_batch_id") @db.Uuid
+  createdAt            DateTime    @default(now()) @map("created_at")
+  updatedAt            DateTime    @updatedAt @map("updated_at")
+  deletedAt            DateTime?   @map("deleted_at")
+  syncStatus           SyncStatus  @default(PENDING) @map("sync_status")
+
+  product      Product             @relation(fields: [productId], references: [id])
+  sucursal     Sucursal            @relation(fields: [sucursalId], references: [id])
+  purchaseItem PurchaseItem?       @relation(fields: [purchaseItemId], references: [id])
+  supplier     Supplier?           @relation(fields: [supplierId], references: [id])
+  movements    InventoryMovement[]
+  wastes       InventoryWaste[]
+  // Modulo de Despiece (Bloque 1 — schema): self-relation de trazabilidad.
+  // parentBatch = el lote de la canal del que salio este corte (si aplica).
+  // childBatches = los lotes de corte que salieron de este lote (si esta
+  // canal fue procesada). Sin logica de negocio todavia en este bloque.
+  parentBatch  Batch?              @relation("BatchLineage", fields: [parentBatchId], references: [id])
+  childBatches Batch[]             @relation("BatchLineage")
+  // Modulo de Despiece (Bloque 1 — schema): lado inverso de
+  // `ProcessingOperation.inputBatch` — un mismo lote de canal puede ser el
+  // insumo de VARIAS operaciones de despiece a lo largo del tiempo (no se
+  // exige procesarlo completo de una sola vez), por eso es lista, no un
+  // valor unico. Sin logica de negocio todavia en este bloque.
+  processingOperationsAsInput ProcessingOperation[] @relation("BatchAsProcessingInput")
+  // Modulo de Despiece (Bloque 1 — schema): lado inverso de
+  // `ProcessingOutputItem.outputBatch` — a diferencia de arriba, ESTE es
+  // 1:1 (`ProcessingOutputItem.outputBatchId` es `@unique`, mismo criterio
+  // que `Batch.purchaseItemId`): un lote de corte nace de exactamente una
+  // linea de salida. Sin logica de negocio todavia en este bloque.
+  processingOutputItemAsOutput ProcessingOutputItem? @relation("BatchAsProcessingOutput")
+
+  @@index([productId])
+  @@index([sucursalId])
+  // Consulta mas frecuente una vez que Ventas resuelva FEFO/FIFO
+  // (LOTES-03): "lotes ACTIVOS de este producto en esta sucursal".
+  @@index([productId, sucursalId, status])
+  @@index([supplierId])
+  @@index([status])
+  @@index([expiryDate])
+  @@index([syncStatus])
+  @@index([parentBatchId])
+  @@map("batches")
+}
+
+// ============================================================================
+//  VENTAS
+// ============================================================================
+
+// Venta (encabezado, raiz agregada). Se asocia a la sesion de caja abierta para
+// poder cuadrar el cierre. Los totales se guardan calculados.
+model Sale {
+  id                  String           @id @default(uuid()) @db.Uuid
+  sucursalId          String           @map("sucursal_id") @db.Uuid
+  userId              String           @map("user_id") @db.Uuid // cajero
+  cashSessionId       String           @map("cash_session_id") @db.Uuid
+  documentNumber      String?          @map("document_number") // consecutivo interno
+  status              SaleStatus       @default(COMPLETED)
+  paymentMethod       PaymentMethod    @default(CASH) @map("payment_method")
+  // Referencia del pago electronico (numero de autorizacion/voucher de
+  // tarjeta, comprobante SINPE, numero de transferencia). Nula para CASH;
+  // requerida por CreateSaleSchema/UpdateSaleSchema (validation.ts) cuando
+  // paymentMethod es CARD/SINPE_MOVIL/TRANSFER — la regla de negocio vive
+  // ahi, no en el esquema (QA-007).
+  paymentReference    String?          @map("payment_reference")
+  saleDate            DateTime         @default(now()) @map("sale_date")
+  subtotal            Decimal          @default(0) @db.Decimal(14, 2)
+  taxTotal            Decimal          @default(0) @map("tax_total") @db.Decimal(14, 2)
+  // Descuento de carrito (no de linea, ver SaleItem.discount): tipo y valor
+  // tal como los ingreso el cajero (ej. PERCENTAGE + 10, o FIXED + 500);
+  // discountTotal es el monto ya calculado a partir de esos dos campos.
+  discountType        SaleDiscountType @default(NONE) @map("discount_type")
+  discountValue       Decimal          @default(0) @map("discount_value") @db.Decimal(14, 2)
+  discountTotal       Decimal          @default(0) @map("discount_total") @db.Decimal(14, 2)
+  total               Decimal          @default(0) @db.Decimal(14, 2)
+  amountPaid          Decimal          @default(0) @map("amount_paid") @db.Decimal(14, 2)
+  changeGiven         Decimal          @default(0) @map("change_given") @db.Decimal(14, 2)
+  notes               String?
+  // Trazabilidad de correccion (Bloque 3, "Detalle de Venta + Anulacion +
+  // Auditoria"): una venta NUNCA se edita in-place para corregirla. En su
+  // lugar, la venta original se anula (status: CANCELLED) y se crea una
+  // venta NUEVA con los datos corregidos, enlazada a la original via este
+  // campo. `@unique`: una venta original tiene a lo sumo UNA venta
+  // correctiva (si esa correctiva tambien necesitara corregirse, se
+  // encadena: la mas nueva apunta a la correctiva anterior, no a la
+  // original historica).
+  originalSaleId      String?          @unique @map("original_sale_id") @db.Uuid
+  // Bloque 8.3: cliente asociado a esta venta (modulo de Clientes, Bloque
+  // 8.2) — nullable, `null` = "Publico General" (comportamiento por
+  // defecto y unico posible antes de este bloque). Puramente informativo
+  // por ahora: NO participa todavia de la emision electronica en Alegra
+  // (Bloque 8.4, fuera de alcance aca) — `emitInvoice` sigue facturando
+  // siempre a "Cliente General" en Alegra, sin importar este campo.
+  customerId          String?          @map("customer_id") @db.Uuid
+  // Bloque 7.7: resultado de emitir esta venta como factura electronica en
+  // Alegra (`modules/integrations/alegra`, `emitInvoice`) — SOLO lo
+  // necesario para consultas futuras (Bloque 7.1: Alegra es el UNICO motor
+  // de facturacion electronica del ERP, no reemplaza ni toca el modelo
+  // `Invoice` existente de `modules/invoicing`, que es un sistema previo y
+  // distinto; ambos coexisten en el schema sin relacionarse). `null` en
+  // los 5 campos = todavia no facturada en Alegra (comportamiento
+  // identico al de antes de estas columnas).
+  alegraInvoiceId     String?          @map("alegra_invoice_id")
+  alegraInvoiceNumber String?          @map("alegra_invoice_number")
+  alegraElectronicKey String?          @map("alegra_electronic_key")
+  alegraInvoiceStatus String?          @map("alegra_invoice_status")
+  alegraIssuedAt      DateTime?        @map("alegra_issued_at")
+  // Fix (05/08/2026, timeout de emision real observado: `POST /invoices`
+  // tardo 14.5s contra un limite de cliente de 10s): distinto de `null` SOLO
+  // cuando una emision quedo con resultado incierto (timeout de red hacia
+  // Alegra, sin poder confirmar si la factura se creo o no). Mientras este
+  // seteado, `emitInvoice` (`alegra.service.ts`) reconcilia contra Alegra
+  // ANTES de permitir un nuevo `POST /invoices` para esta venta — evita una
+  // doble emision real si el usuario reintenta despues (incluso tras
+  // reiniciar la app). Se limpia (vuelve a `null`) en cuanto la
+  // reconciliacion resuelve la duda, en cualquier sentido.
+  alegraEmissionUncertainAt DateTime?  @map("alegra_emission_uncertain_at")
+  createdAt           DateTime         @default(now()) @map("created_at")
+  updatedAt           DateTime         @updatedAt @map("updated_at")
+  deletedAt           DateTime?        @map("deleted_at")
+  syncStatus          SyncStatus       @default(PENDING) @map("sync_status")
+
+  sucursal          Sucursal               @relation(fields: [sucursalId], references: [id])
+  user              User                   @relation(fields: [userId], references: [id])
+  cashSession       CashSession            @relation(fields: [cashSessionId], references: [id])
+  // Bloque 8.3: opcional — ver comentario de `customerId` arriba.
+  customer          Customer?              @relation(fields: [customerId], references: [id])
+  items             SaleItem[]
+  invoice           Invoice?
+  originalSale      Sale?                  @relation("SaleCorrection", fields: [originalSaleId], references: [id])
+  correctedBySale   Sale?                  @relation("SaleCorrection")
+  // Bloque 4.1 (infraestructura base de Devoluciones): una venta puede
+  // tener varias devoluciones (parciales, ver SaleReturn). Sin uso real
+  // todavia (sin logica de negocio en este bloque).
+  returns           SaleReturn[]
+  // Bloque P.1 (Motor de Promociones, infraestructura de auditoria): cada
+  // descuento realmente aplicado a esta venta (hoy, siempre a lo sumo uno,
+  // el descuento manual de carrito).
+  appliedPromotions SaleAppliedPromotion[]
+
+  @@unique([sucursalId, documentNumber])
+  @@index([sucursalId])
+  @@index([userId])
+  @@index([cashSessionId])
+  @@index([customerId])
+  @@index([status])
+  @@index([syncStatus])
+  @@index([saleDate])
+  @@map("sales")
+}
+
+// Detalle de venta (linea). `unitPrice` y `taxRate` son SNAPSHOT al momento de
+// la venta. Para productos por peso, `quantity` es el peso en kg.
+model SaleItem {
+  id                             String     @id @default(uuid()) @db.Uuid
+  saleId                         String     @map("sale_id") @db.Uuid
+  productId                      String     @map("product_id") @db.Uuid
+  taxId                          String?    @map("tax_id") @db.Uuid
+  quantity                       Decimal    @db.Decimal(12, 3)
+  unitPrice                      Decimal    @map("unit_price") @db.Decimal(14, 2) // snapshot
+  taxRate                        Decimal    @map("tax_rate") @db.Decimal(5, 2) // snapshot
+  // Bloque 14.2 (Costos Base): snapshot de `Product.cost` al momento de la
+  // venta, inmutable para siempre (nunca se recalcula). Nullable porque las
+  // ventas creadas antes de este bloque no tienen este dato — no se
+  // "rellenan" retroactivamente con el costo ACTUAL del producto, ya que
+  // eso falsearia el costo historico real; el reporte de utilidad debe
+  // tratar `null` como costo desconocido, no como cero.
+  unitCost                       Decimal?   @map("unit_cost") @db.Decimal(14, 2)
+  // Bloque COST-03.2 (Opcion A, correccion de historico): snapshot del dato
+  // MAESTRO del producto al momento de la venta — igual criterio que
+  // `unitCost` arriba. Nunca se leen los campos VIGENTES de `Product`
+  // (`expectedWastePercent`/`applyExpectedWasteToCost`) para recalcular
+  // una venta ya realizada: el reporte de utilidad (`reports.service.ts`)
+  // debe usar EXCLUSIVAMENTE estos dos campos para construir el
+  // `CostContext` del `CostEngine`. Nullable por el mismo motivo que
+  // `unitCost`: ventas anteriores a este bloque no tienen este dato, y
+  // `null` se trata como "regla no registrada" (equivalente a
+  // `applyExpectedWasteToCostAtSale: false`), nunca inferido del `Product`
+  // vigente.
+  expectedWastePercentAtSale     Decimal?   @map("expected_waste_percent_at_sale") @db.Decimal(5, 2)
+  applyExpectedWasteToCostAtSale Boolean?   @map("apply_expected_waste_to_cost_at_sale")
+  discount                       Decimal    @default(0) @db.Decimal(14, 2)
+  lineSubtotal                   Decimal    @map("line_subtotal") @db.Decimal(14, 2)
+  lineTax                        Decimal    @map("line_tax") @db.Decimal(14, 2)
+  lineTotal                      Decimal    @map("line_total") @db.Decimal(14, 2)
+  createdAt                      DateTime   @default(now()) @map("created_at")
+  updatedAt                      DateTime   @updatedAt @map("updated_at")
+  deletedAt                      DateTime?  @map("deleted_at")
+  syncStatus                     SyncStatus @default(PENDING) @map("sync_status")
+
+  sale              Sale                   @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product           Product                @relation(fields: [productId], references: [id])
+  tax               Tax?                   @relation(fields: [taxId], references: [id])
+  // Bloque 4.1 (infraestructura base de Devoluciones): cuantas veces (y en
+  // que devoluciones) se devolvio parcial o totalmente esta linea. Sin uso
+  // real todavia (sin logica de negocio en este bloque).
+  returnItems       SaleReturnItem[]
+  // Bloque P.1 (Motor de Promociones, infraestructura de auditoria): a que
+  // linea se asocio un descuento (nulo = descuento a nivel de carrito
+  // completo, el unico caso real hoy). Sin uso real todavia — el
+  // descuento manual actual sigue siendo exclusivamente de carrito.
+  appliedPromotions SaleAppliedPromotion[]
+
+  @@index([saleId])
+  @@index([productId])
+  @@map("sale_items")
+}
+
+// ============================================================================
+//  MOTOR DE PROMOCIONES Y DESCUENTOS (Bloque P.1 — infraestructura de
+//  auditoria)
+//  Registra CADA descuento realmente aplicado a una venta como un evento
+//  auditable independiente — quien lo aplico, si fue manual o automatico, y
+//  cuanto se descuento exactamente. No reemplaza `Sale.discountType/
+//  discountValue/discountTotal` ni `SaleItem.discount/lineTotal` (los
+//  campos agregados que ya consumen Detalle de Venta/Reportes siguen
+//  exactamente igual) — es una capa de trazabilidad ADICIONAL por debajo
+//  de esos numeros. Bloque P.1 unicamente conecta el descuento manual de
+//  carrito que YA existe hoy con esta infraestructura; el catalogo de
+//  promociones reutilizables (`Promotion`, con alcance/condicion/efecto
+//  configurables) y su motor de reglas quedan para bloques futuros — ver
+//  analisis de arquitectura aprobado. Por eso `promotionId` NO existe
+//  todavia en este modelo: se agregara (columna nullable, migracion
+//  aditiva) recien cuando exista una tabla `Promotion` a la cual apuntar.
+model SaleAppliedPromotion {
+  id                    String               @id @default(uuid()) @db.Uuid
+  saleId                String               @map("sale_id") @db.Uuid
+  // Nulo = descuento a nivel de carrito completo (el unico caso real hoy,
+  // el descuento manual del POS). Cuando exista descuento automatico por
+  // producto/combo, esta misma columna, ya preparada, enlazara esa fila
+  // con la linea especifica que afecto.
+  saleItemId            String?              @map("sale_item_id") @db.Uuid
+  source                PromotionSource      @default(MANUAL)
+  // Quien aplico el descuento — solo tiene sentido cuando `source: MANUAL`
+  // (el cajero que lo ingreso). Para `AUTOMATIC` (futuro) quedara null: no
+  // hay un usuario "aplicando" una promocion que se dispara sola.
+  appliedByUserId       String?              @map("applied_by_user_id") @db.Uuid
+  // Snapshot de como se llamaba/que regla tenia la promocion en el
+  // MOMENTO en que se aplico — mismo criterio que `SaleItem.taxName`
+  // (Bloque D.1): si el futuro catalogo de promociones se edita despues,
+  // el historial no debe cambiar retroactivamente. Para el caso MANUAL de
+  // hoy, siempre es un texto fijo descriptivo ("Descuento manual"), no
+  // hay catalogo del cual copiarlo.
+  promotionNameSnapshot String               @map("promotion_name_snapshot")
+  // Reutiliza el mismo vocabulario que `Sale.discountType` (PERCENTAGE/
+  // FIXED) porque, en este bloque, es exactamente lo mismo que se esta
+  // auditando — nunca se guarda `NONE` (una fila solo existe si SI se
+  // aplico un descuento). Cuando el catalogo de promociones (P.3+) sume
+  // efectos que no encajan en este vocabulario (precio especial, "compre
+  // N pague M"), sera el punto natural para decidir si esta columna se
+  // amplia o se agrega una nueva junto a ella — decision explicitamente
+  // diferida, no tomada aqui.
+  discountType          SaleDiscountType     @map("discount_type")
+  discountValue         Decimal              @map("discount_value") @db.Decimal(14, 2)
+  // El monto real descontado en colones — el dato que auditoria/reportes
+  // necesitan de verdad, independiente de si el porcentaje/monto de
+  // origen tenia sentido o de como se llamaba la promocion.
+  amountApplied         Decimal              @map("amount_applied") @db.Decimal(14, 2)
+  // --- Deuda tecnica del motor de promociones, Bloque 2 (migracion aditiva) ---
+  // `discountType`/`discountValue` (arriba) quedan SIN CAMBIOS: siguen
+  // colapsando `PromotionEffectType` a PERCENTAGE/FIXED exactamente igual
+  // que hoy (ver comentario original arriba y `sales/service.ts`). Estas
+  // dos columnas nuevas, nullable, son ADITIVAS — no reemplazan nada, no
+  // se leen ni se escriben todavia (eso es un bloque posterior, que
+  // tocara `sales/service.ts`). Quedan siempre `null` para filas `MANUAL`
+  // (un descuento manual no es una regla de promocion con `effectType`
+  // propio) y, hasta el proximo bloque, tambien para filas `AUTOMATIC`
+  // existentes o nuevas — la migracion en si no popula nada.
+  //
+  // `effectType`: preserva el tipo real de la regla (`PERCENTAGE`/
+  // `FIXED_AMOUNT`/`SPECIAL_PRICE`/`BUY_X_PAY_Y`) sin la perdida de
+  // granularidad de `discountType`.
+  effectType            PromotionEffectType? @map("effect_type")
+  // `promotionId`: trazabilidad activa hacia la regla del catalogo,
+  // complementando (no reemplazando) `promotionNameSnapshot`. Nullable y
+  // `onDelete: SetNull` porque hoy no existe borrado fisico de
+  // `Promotion` (solo `active: false`), pero si se agrega en el futuro,
+  // un borrado no debe destruir ni bloquear el historial de auditoria ya
+  // registrado — el snapshot de nombre sigue siendo la fuente inmutable.
+  promotionId           String?              @map("promotion_id") @db.Uuid
+  createdAt             DateTime             @default(now()) @map("created_at")
+
+  // --- PROMO-10 (snapshot historico de rentabilidad comercial) ---
+  // Mismo criterio de snapshot ya usado por `SaleItem.expectedWastePercentAtSale`/
+  // `applyExpectedWasteToCostAtSale` (Bloque COST-03.2, CostEngine): estos 5
+  // campos se copian del `Promotion`/calculo vigente en el momento EXACTO
+  // de la venta y nunca se vuelven a leer desde `Promotion` despues — si la
+  // promocion se edita o su proveedor/financiamiento cambia mas adelante,
+  // esta fila (ya persistida) no cambia. Todos nullable/con default seguro:
+  // filas `MANUAL` (sin `Promotion` real detras) y filas `AUTOMATIC`
+  // existentes antes de este bloque quedan con el default (`INTERNAL`/
+  // `NONE`) o `null`, sin backfill necesario.
+  //
+  // `commercialOrigin`/`fundingType`/`supplierId`/`supplierSubsidyValue`:
+  // copia textual de los mismos campos de `Promotion` (PROMO-03) vigentes
+  // al momento de la venta — NO son una FK "viva" que se reinterprete
+  // despues (`supplierId` es nullable y SIN relacion inversa activa desde
+  // `Supplier`, a proposito: es un dato historico, no participa de
+  // ninguna consulta de "promociones de este proveedor").
+  commercialOrigin           PromotionOrigin      @default(INTERNAL) @map("commercial_origin")
+  fundingType                PromotionFundingType @default(NONE) @map("funding_type")
+  supplierId                 String?              @map("supplier_id") @db.Uuid
+  supplierSubsidyValue       Decimal?             @map("supplier_subsidy_value") @db.Decimal(14, 2)
+  // Monto REALMENTE aplicado por el proveedor en ESTA fila especifica
+  // (distinto de `supplierSubsidyValue`, que es el parametro CRUDO de la
+  // regla — mismo criterio que `amountApplied` vs. `discountValue` un
+  // poco mas arriba). `null` cuando `fundingType: NONE` (sin financiamiento
+  // externo en esta fila).
+  supplierContributionAmount Decimal?             @map("supplier_contribution_amount") @db.Decimal(14, 2)
+
+  sale          Sale       @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  saleItem      SaleItem?  @relation(fields: [saleItemId], references: [id], onDelete: Cascade)
+  appliedByUser User?      @relation(fields: [appliedByUserId], references: [id])
+  promotion     Promotion? @relation(fields: [promotionId], references: [id], onDelete: SetNull)
+
+  @@index([saleId])
+  @@index([saleItemId])
+  @@index([promotionId])
+  @@map("sale_applied_promotions")
+}
+
+// ============================================================================
+//  DEVOLUCIONES (Bloque 4.1 — infraestructura base)
+//  Solo modelos/relaciones: SIN logica de negocio ni endpoints todavia (ver
+//  analisis del Bloque 4). Una venta puede tener varias devoluciones
+//  (parciales); cada devolucion tiene una o mas lineas, cada una enlazada a
+//  la linea de venta original que reduce. `refundMethod` reutiliza
+//  `PaymentMethod` porque el reembolso puede ser en un medio distinto al de
+//  pago original (decision de negocio pendiente, ver analisis).
+// ============================================================================
+
+// Cabecera de una devolucion contra una venta. `cashSessionId` es la sesion
+// que EMITE el reembolso (no necesariamente la sesion de la venta original
+// — una devolucion suele ocurrir dias despues, en otra sesion). `userId` es
+// quien PROCESA la devolucion (no necesariamente el cajero original).
+model SaleReturn {
+  id            String        @id @default(uuid()) @db.Uuid
+  saleId        String        @map("sale_id") @db.Uuid
+  sucursalId    String        @map("sucursal_id") @db.Uuid
+  cashSessionId String        @map("cash_session_id") @db.Uuid
+  userId        String        @map("user_id") @db.Uuid
+  reason        String
+  refundMethod  PaymentMethod @map("refund_method")
+  totalAmount   Decimal       @default(0) @map("total_amount") @db.Decimal(14, 2)
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+  deletedAt     DateTime?     @map("deleted_at")
+  syncStatus    SyncStatus    @default(PENDING) @map("sync_status")
+
+  sale        Sale             @relation(fields: [saleId], references: [id])
+  sucursal    Sucursal         @relation(fields: [sucursalId], references: [id])
+  cashSession CashSession      @relation(fields: [cashSessionId], references: [id])
+  user        User             @relation(fields: [userId], references: [id])
+  items       SaleReturnItem[]
+
+  @@index([saleId])
+  @@index([sucursalId])
+  @@index([cashSessionId])
+  @@index([syncStatus])
+  @@map("sale_returns")
+}
+
+// Linea de una devolucion. `unitPrice`/`lineTotal` son SNAPSHOT (mismo
+// criterio que `SaleItem.unitPrice`/`taxRate`), no se recalculan contra el
+// precio actual del producto. `quantity` nunca debe, en conjunto con las
+// demas devoluciones de la misma `saleItemId`, superar la `quantity`
+// original de esa `SaleItem` — invariante que debera validar la logica de
+// negocio (todavia no implementada en este bloque), no la base de datos.
+model SaleReturnItem {
+  id           String   @id @default(uuid()) @db.Uuid
+  saleReturnId String   @map("sale_return_id") @db.Uuid
+  saleItemId   String   @map("sale_item_id") @db.Uuid
+  quantity     Decimal  @db.Decimal(12, 3)
+  unitPrice    Decimal  @map("unit_price") @db.Decimal(14, 2)
+  lineTotal    Decimal  @map("line_total") @db.Decimal(14, 2)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  saleReturn SaleReturn      @relation(fields: [saleReturnId], references: [id], onDelete: Cascade)
+  saleItem   SaleItem        @relation(fields: [saleItemId], references: [id])
+  // Bloque 5.2 (infraestructura base de Mermas): si esta linea de devolucion
+  // no volvio a stock vendible (`restock: false`, Bloque 4.2), queda
+  // enlazada a la merma que la representa — ver `InventoryWaste`. Sin uso
+  // real todavia (sin logica de negocio en este bloque: nada genera esta
+  // relacion automaticamente todavia).
+  waste      InventoryWaste?
+
+  @@index([saleReturnId])
+  @@index([saleItemId])
+  @@map("sale_return_items")
+}
+
+// ============================================================================
+//  MERMAS (Bloque 5.2 — infraestructura base)
+//  `InventoryWaste` es el DOCUMENTO DE NEGOCIO que representa el evento de
+//  merma (quien, cuando, por que, cuanto, de que sucursal/producto).
+//  `InventoryMovement` (tipo WASTE, ya existente) sigue siendo el UNICO
+//  responsable de modificar el stock — este modelo NO lo reemplaza, lo
+//  complementa (mismo patron ya usado por `Sale`/`SaleReturn`, cada uno con
+//  su propio movimiento de inventario aparte). Sin logica de negocio en
+//  este bloque: nada crea todavia un `InventoryWaste` ni su
+//  `InventoryMovement` correspondiente.
+// ============================================================================
+
+// Documento de negocio de una merma. `unitValue`/`totalValue` son SNAPSHOT
+// (mismo criterio que `SaleItem.unitPrice`/`SaleReturnItem.unitPrice`): el
+// costo de referencia del producto (`Product.cost`) al momento de la merma,
+// no se recalcula despues (ver analisis del Bloque 5.1, seccion de
+// "Valorizacion"). `sourceReturnItemId` es opcional y `@unique`: una linea
+// de devolucion no reingresada corresponde, a lo sumo, a UNA merma.
+model InventoryWaste {
+  id                 String      @id @default(uuid()) @db.Uuid
+  sucursalId         String      @map("sucursal_id") @db.Uuid
+  productId          String      @map("product_id") @db.Uuid
+  userId             String      @map("user_id") @db.Uuid
+  reason             WasteReason
+  notes              String?
+  quantity           Decimal     @db.Decimal(12, 3)
+  unitValue          Decimal     @map("unit_value") @db.Decimal(14, 2)
+  totalValue         Decimal     @map("total_value") @db.Decimal(14, 2)
+  sourceReturnItemId String?     @unique @map("source_return_item_id") @db.Uuid
+  // Bloque LOTES-01 (Modulo de Lotes): nullable -- misma logica que
+  // `InventoryMovement.batchId` (ver ese campo), asocia la merma al lote
+  // especifico que vencio/se daño, cuando aplica. Sin logica de negocio
+  // todavia (LOTES-05 es quien empieza a poblarlo).
+  batchId            String?     @map("batch_id") @db.Uuid
+  // Modulo de Despiece (Bloque 1 — schema, sin logica todavia): nullable --
+  // misma logica que `batchId` de arriba, asocia la merma a la operacion de
+  // despiece de la que salio, cuando aplica (`reason: PROCESSING_LOSS`
+  // tipicamente, pero no exclusivo). `null` = merma sin relacion a un
+  // despiece — comportamiento identico al de antes de esta columna.
+  processingOperationId String?  @map("processing_operation_id") @db.Uuid
+  createdAt          DateTime    @default(now()) @map("created_at")
+  updatedAt          DateTime    @updatedAt @map("updated_at")
+  deletedAt          DateTime?   @map("deleted_at")
+  syncStatus         SyncStatus  @default(PENDING) @map("sync_status")
+
+  sucursal            Sucursal             @relation(fields: [sucursalId], references: [id])
+  product             Product              @relation(fields: [productId], references: [id])
+  user                User                 @relation(fields: [userId], references: [id])
+  sourceReturnItem    SaleReturnItem?      @relation(fields: [sourceReturnItemId], references: [id])
+  batch               Batch?               @relation(fields: [batchId], references: [id])
+  processingOperation ProcessingOperation? @relation("ProcessingWaste", fields: [processingOperationId], references: [id])
+
+  @@index([sucursalId])
+  @@index([productId])
+  @@index([userId])
+  @@index([reason])
+  @@index([syncStatus])
+  @@index([batchId])
+  @@index([processingOperationId])
+  @@map("inventory_wastes")
+}
+
+// ============================================================================
+//  DESPIECE (Bloque 1 — schema/migracion unicamente, sin logica de negocio
+//  todavia — ver plan v3 aprobado). Registra la transformacion de un
+//  producto/lote de entrada (ej. una canal recibida por Compras) en N
+//  productos de salida (cortes/subproductos), cada uno con su propio Batch
+//  nuevo, mas las mermas reales del proceso. Modulo 100% aditivo: no
+//  modifica el comportamiento de Purchases/Sales/Batches/InventoryWaste
+//  para ningun producto que no pase por una operacion de despiece.
+// ============================================================================
+
+// Cabecera de una operacion de despiece. `inputBatchId` queda nullable a
+// nivel de columna (soporta productos sin `requiresBatch`), pero la regla
+// de negocio (aun sin implementar en este bloque) exige que sea obligatorio
+// para poder completar la operacion cuando `inputProduct.requiresBatch` es
+// `true` — nunca puede existir una operacion COMPLETED sin ese vinculo en
+// ese caso. Un mismo `inputBatchId` puede ser el insumo de VARIAS
+// operaciones a lo largo del tiempo (no se exige procesar el lote completo
+// de una sola vez).
+model ProcessingOperation {
+  id             String           @id @default(uuid()) @db.Uuid
+  code           String           @unique
+  sucursalId     String           @map("sucursal_id") @db.Uuid
+  userId         String           @map("user_id") @db.Uuid
+  inputProductId String           @map("input_product_id") @db.Uuid
+  inputBatchId   String?          @map("input_batch_id") @db.Uuid
+  inputQuantity  Decimal          @map("input_quantity") @db.Decimal(12, 3)
+  inputUnitCost  Decimal          @map("input_unit_cost") @db.Decimal(14, 2)
+  status         ProcessingStatus @default(DRAFT)
+  completedAt    DateTime?        @map("completed_at")
+  notes          String?
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+  deletedAt      DateTime?        @map("deleted_at")
+  syncStatus     SyncStatus       @default(PENDING) @map("sync_status")
+
+  sucursal     Sucursal                @relation(fields: [sucursalId], references: [id])
+  user         User                    @relation(fields: [userId], references: [id])
+  inputProduct Product                 @relation("ProcessingInput", fields: [inputProductId], references: [id])
+  inputBatch   Batch?                  @relation("BatchAsProcessingInput", fields: [inputBatchId], references: [id])
+  outputItems  ProcessingOutputItem[]
+  wastes       InventoryWaste[]        @relation("ProcessingWaste")
+  wasteLines   ProcessingWasteItem[]
+
+  @@index([sucursalId])
+  @@index([userId])
+  @@index([status])
+  @@index([inputProductId])
+  @@index([inputBatchId])
+  @@index([syncStatus])
+  @@map("processing_operations")
+}
+
+// Una linea de salida = un corte/subproducto obtenido. Al completarse la
+// operacion (logica de un bloque posterior, no este), cada linea genera
+// exactamente un Batch nuevo — mismo patron 1:1 que `PurchaseItem.batch`
+// (`outputBatchId` es `@unique`, igual que `Batch.purchaseItemId`).
+model ProcessingOutputItem {
+  id                     String   @id @default(uuid()) @db.Uuid
+  processingOperationId  String   @map("processing_operation_id") @db.Uuid
+  outputProductId        String   @map("output_product_id") @db.Uuid
+  quantity               Decimal  @db.Decimal(12, 3)
+  salePriceSnapshot      Decimal  @map("sale_price_snapshot") @db.Decimal(14, 2)
+  allocatedCost          Decimal? @map("allocated_cost") @db.Decimal(14, 2)
+  outputBatchId          String?  @unique @map("output_batch_id") @db.Uuid
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+  syncStatus              SyncStatus @default(PENDING) @map("sync_status")
+
+  processingOperation ProcessingOperation   @relation(fields: [processingOperationId], references: [id])
+  outputProduct       Product               @relation("ProcessingOutput", fields: [outputProductId], references: [id])
+  outputBatch         Batch?                @relation("BatchAsProcessingOutput", fields: [outputBatchId], references: [id])
+
+  @@index([processingOperationId])
+  @@index([outputProductId])
+  @@map("processing_output_items")
+}
+
+// Una linea de merma real capturada durante el DRAFT (correccion aprobada
+// tras la revision del Bloque 2: la merma dejo de ser un valor derivado
+// implicito y paso a ser lineas explicitas con cantidad/motivo/notas,
+// mismo nivel de detalle que `ProcessingOutputItem` para las salidas). Al
+// completarse la operacion, cada linea genera exactamente una
+// `InventoryWaste` propia (`ProcessingOperation.wastes`, ya existente desde
+// el Bloque 1) — esta tabla es el borrador editable previo a esa
+// materializacion, nunca el registro final de merma en si.
+model ProcessingWasteItem {
+  id                    String      @id @default(uuid()) @db.Uuid
+  processingOperationId String      @map("processing_operation_id") @db.Uuid
+  reason                WasteReason @default(PROCESSING_LOSS)
+  quantity              Decimal     @db.Decimal(12, 3)
+  notes                 String?
+  createdAt             DateTime    @default(now()) @map("created_at")
+  updatedAt             DateTime    @updatedAt @map("updated_at")
+  syncStatus            SyncStatus  @default(PENDING) @map("sync_status")
+
+  processingOperation ProcessingOperation @relation(fields: [processingOperationId], references: [id])
+
+  @@index([processingOperationId])
+  @@map("processing_waste_items")
+}
+
+// ============================================================================
+//  CAJA
+// ============================================================================
+
+// Caja registradora (el punto de cobro fisico). Sobre ella se abren sesiones.
+model CashRegister {
+  id         String     @id @default(uuid()) @db.Uuid
+  sucursalId String     @map("sucursal_id") @db.Uuid
+  name       String
+  active     Boolean    @default(true)
+  createdAt  DateTime   @default(now()) @map("created_at")
+  updatedAt  DateTime   @updatedAt @map("updated_at")
+  deletedAt  DateTime?  @map("deleted_at")
+  syncStatus SyncStatus @default(PENDING) @map("sync_status")
+
+  sucursal Sucursal      @relation(fields: [sucursalId], references: [id])
+  sessions CashSession[]
+
+  @@index([sucursalId])
+  @@index([syncStatus])
+  @@map("cash_registers")
+}
+
+// Sesion de caja. Modela la APERTURA y el CIERRE como un mismo ciclo de vida
+// (dos eventos de una sesion, no dos tablas): opening* = apertura, closing* =
+// cierre. `expectedAmount` y `difference` se calculan al cerrar para el arqueo.
+model CashSession {
+  id             String            @id @default(uuid()) @db.Uuid
+  sucursalId     String            @map("sucursal_id") @db.Uuid
+  cashRegisterId String            @map("cash_register_id") @db.Uuid
+  status         CashSessionStatus @default(OPEN)
+
+  // Apertura
+  openedByUserId String   @map("opened_by_user_id") @db.Uuid
+  openedAt       DateTime @default(now()) @map("opened_at")
+  openingAmount  Decimal  @map("opening_amount") @db.Decimal(14, 2) // fondo inicial
+
+  // Cierre
+  closedByUserId String?   @map("closed_by_user_id") @db.Uuid
+  closedAt       DateTime? @map("closed_at")
+  closingAmount  Decimal?  @map("closing_amount") @db.Decimal(14, 2) // contado real
+  expectedAmount Decimal?  @map("expected_amount") @db.Decimal(14, 2) // calculado
+  difference     Decimal?  @db.Decimal(14, 2) // sobrante/faltante
+  notes          String?
+
+  createdAt  DateTime   @default(now()) @map("created_at")
+  updatedAt  DateTime   @updatedAt @map("updated_at")
+  deletedAt  DateTime?  @map("deleted_at")
+  syncStatus SyncStatus @default(PENDING) @map("sync_status")
+
+  sucursal     Sucursal       @relation(fields: [sucursalId], references: [id])
+  cashRegister CashRegister   @relation(fields: [cashRegisterId], references: [id])
+  openedBy     User           @relation("SessionOpenedBy", fields: [openedByUserId], references: [id])
+  closedBy     User?          @relation("SessionClosedBy", fields: [closedByUserId], references: [id])
+  sales        Sale[]
+  movements    CashMovement[]
+  // Bloque 4.1 (infraestructura base de Devoluciones): sesion que EMITE el
+  // reembolso (no necesariamente la sesion de la venta original — ver
+  // analisis del Bloque 4). Sin uso real todavia (sin logica de negocio en
+  // este bloque).
+  saleReturns  SaleReturn[]
+
+  @@index([sucursalId])
+  @@index([cashRegisterId])
+  @@index([status])
+  @@index([syncStatus])
+  @@index([openedAt])
+  @@map("cash_sessions")
+}
+
+// Movimiento de caja: ingresos/egresos manuales de efectivo durante una sesion
+// (retiros, gastos menores, aportes). No confundir con las ventas.
+model CashMovement {
+  id            String           @id @default(uuid()) @db.Uuid
+  sucursalId    String           @map("sucursal_id") @db.Uuid
+  cashSessionId String           @map("cash_session_id") @db.Uuid
+  userId        String           @map("user_id") @db.Uuid
+  type          CashMovementType
+  amount        Decimal          @db.Decimal(14, 2)
+  reason        String
+  // Bloque 4.1 (infraestructura base de Devoluciones): a diferencia de
+  // `InventoryMovement` (que ya tenia `referenceType`/`referenceId`),
+  // `CashMovement` no podia vincularse a que lo origino. Mismo patron que
+  // `InventoryMovement.referenceType`/`referenceId` — nulos para los
+  // movimientos manuales de siempre (CASH_IN/CASH_OUT sin origen), usados
+  // por un futuro reembolso (`type: REFUND`) para apuntar a su
+  // `SaleReturn`. Sin uso real todavia (sin logica de negocio en este
+  // bloque).
+  referenceType String?          @map("reference_type")
+  referenceId   String?          @map("reference_id") @db.Uuid
+  createdAt     DateTime         @default(now()) @map("created_at")
+  updatedAt     DateTime         @updatedAt @map("updated_at")
+  deletedAt     DateTime?        @map("deleted_at")
+  syncStatus    SyncStatus       @default(PENDING) @map("sync_status")
+
+  sucursal    Sucursal    @relation(fields: [sucursalId], references: [id])
+  cashSession CashSession @relation(fields: [cashSessionId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id])
+
+  @@index([cashSessionId])
+  @@index([sucursalId])
+  @@index([referenceType, referenceId])
+  @@map("cash_movements")
+}
+
+// ============================================================================
+//  CONFIGURACION Y AUDITORIA
+// ============================================================================
+
+// Contador atomico para generar consecutivos de documentos (ej. numero de
+// venta VTA-000001). Una fila por tipo de documento; el incremento ocurre
+// dentro de la misma transaccion que crea el documento (ver
+// sales.service.ts), para que sea rollback-safe y sin condiciones de
+// carrera entre transacciones concurrentes.
+model DocumentSequence {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @unique
+  value     Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("document_sequences")
+}
+
+// Configuracion del sistema por sucursal (clave-valor). Flexible para datos de
+// empresa, moneda (CRC), parametros operativos, etc., sin migraciones nuevas
+// por cada parametro.
+model Configuration {
+  id          String     @id @default(uuid()) @db.Uuid
+  sucursalId  String     @map("sucursal_id") @db.Uuid
+  key         String
+  value       String
+  type        String     @default("string") // string | number | boolean | json
+  description String?
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+  deletedAt   DateTime?  @map("deleted_at")
+  syncStatus  SyncStatus @default(PENDING) @map("sync_status")
+
+  sucursal Sucursal @relation(fields: [sucursalId], references: [id])
+
+  @@unique([sucursalId, key])
+  @@index([syncStatus])
+  @@map("configurations")
+}
+
+// Configuracion de la integracion con Alegra (Bloque 7.4). Fila unica
+// ("singleton": `id` siempre "singleton", nunca se crea una segunda) — a
+// diferencia de `Configuration` (per-sucursal), Alegra factura a nivel de
+// una unica cuenta/empresa fiscal para todo el ERP (ver riesgo identificado
+// en el analisis del Bloque 7.1). `token` NUNCA se guarda en texto plano:
+// es el resultado de `alegra.crypto.ts` (AES-256-GCM con
+// `env.INTEGRATIONS_ENCRYPTION_KEY`), a diferencia de `User.passwordHash`/
+// `RefreshToken.tokenHash` (hash de una via, solo para verificar) — este
+// token debe poder recuperarse en texto plano para autenticar cada llamada
+// saliente a la API de Alegra.
+// Bloque 7.5: `genericClientId` cachea el ID (de Alegra, no del ERP) del
+// contacto "Cliente General" ya resuelto/creado en la cuenta de Alegra —
+// una vez resuelto, ninguna emision futura vuelve a buscarlo ni a crearlo
+// (ver `alegra.service.ts`, `resolveGenericClient`). Vive en la misma fila
+// singleton en vez de una tabla aparte: es un unico valor mas asociado 1:1
+// a "la" cuenta de Alegra configurada, mismo criterio que email/token/baseUrl.
+model AlegraConfig {
+  id              String   @id @default("singleton")
+  email           String
+  token           String // blob cifrado (iv:authTag:cipher en base64), nunca texto plano
+  baseUrl         String   @map("base_url")
+  genericClientId String?  @map("generic_client_id")
+  // Bloque 7.19: id de la cuenta de Alegra (`GET /bank-accounts`, cuenta
+  // real de cada empresa — NUNCA hardcodeada en el codigo) usada para
+  // registrar el pago de ventas en efectivo/mixtas y con tarjeta/SINPE/
+  // transferencia respectivamente (`payments[].account.id` en
+  // `POST /invoices`, Bloque 7.18). Resueltas UNA sola vez
+  // (`resolveAlegraAccountId`, `alegra.service.ts`) y reutilizadas siempre
+  // despues — mismo patron ya usado para `genericClientId`/
+  // `Product.alegraProductId`. `null` = todavia no resuelta.
+  cashAccountId   String?  @map("cash_account_id")
+  bankAccountId   String?  @map("bank_account_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("alegra_config")
+}
+
+// Registro de auditoria (requisito #9). Es INMUTABLE y de solo agregado: por eso
+// NO lleva updated_at ni deleted_at (un log de auditoria no se edita ni se
+// borra; eso seria un antipatron). Conserva sync_status para poder consolidarse
+// en la nube (Fase 2). `before`/`after` guardan el estado como JSON.
+/**
+ * Refresh tokens emitidos (A-02: rotacion y revocacion). Nunca se guarda
+ * el JWT completo, solo su hash (mismo criterio que las contrasenas) —
+ * este modelo solo necesita responder "es este token vigente o ya fue
+ * usado/revocado", no reconstruir el JWT original.
+ */
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model AuditLog {
+  id         String      @id @default(uuid()) @db.Uuid
+  sucursalId String      @map("sucursal_id") @db.Uuid
+  userId     String?     @map("user_id") @db.Uuid
+  action     AuditAction
+  entity     String
+  entityId   String?     @map("entity_id") @db.Uuid
+  ip         String?
+  before     Json?
+  after      Json?
+  metadata   Json?
+  createdAt  DateTime    @default(now()) @map("created_at")
+  syncStatus SyncStatus  @default(PENDING) @map("sync_status")
+
+  sucursal Sucursal @relation(fields: [sucursalId], references: [id])
+  user     User?    @relation(fields: [userId], references: [id])
+
+  @@index([sucursalId])
+  @@index([userId])
+  @@index([action])
+  @@index([entity])
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@index([syncStatus])
+  @@map("audit_logs")
+}
+
+// ============================================================================
+//  SINCRONIZACION (Bloque 4 - cola de salida / outbox)
+// ============================================================================
+
+// Cola de trabajos pendientes de sincronizar hacia afuera (nube y, mas
+// adelante, envio a Hacienda de facturacion electronica — ver
+// `modules/sync/sync.handlers`, un handler por `jobType`). Patron outbox:
+// cada fila se inserta en la MISMA transaccion que el dato de negocio que
+// representa, para que no pueda perderse un trabajo si el proceso se cae
+// entre guardar el dato y encolarlo. No tiene relaciones FK a proposito
+// (entityType/entityId son genericos, referencian cualquier tabla
+// transaccional sin acoplar este modelo a una lista fija de modelos).
+model SyncJob {
+  id             String        @id @default(uuid()) @db.Uuid
+  // Denormalizado desde la entidad de origen (todas las tablas
+  // transaccionales ya lo tienen desde el dia 1, ver ARCHITECTURE.md
+  // requisito #2) — permite filtrar/monitorear la cola por sucursal sin
+  // hacer join contra N tablas de entidad distintas. Cada sucursal corre
+  // su propia instancia on-premise con su propia cola (ver
+  // DEPLOYMENT.md #0): esto es solo para lectura/monitoreo, no coordina
+  // nada entre sucursales.
+  sucursalId     String        @map("sucursal_id") @db.Uuid
+  jobType        SyncJobType   @map("job_type")
+  entityType     String        @map("entity_type")
+  entityId       String        @map("entity_id") @db.Uuid
+  // Snapshot opcional de datos necesarios para procesar el trabajo sin
+  // tener que releer la entidad de origen (por si ya no existe/cambio).
+  // Sin forma fija todavia — el handler real (Fase 2) define que necesita.
+  payload        Json?
+  // `${jobType}:${entityType}:${entityId}` — unico. Evita encolar el mismo
+  // trabajo dos veces (ej. un mutation reintentado desde el frontend, o un
+  // "reintentar" manual) sin necesitar coordinacion adicional.
+  idempotencyKey String        @unique @map("idempotency_key")
+  status         SyncJobStatus @default(PENDING)
+  attempts       Int           @default(0)
+  lastError      String?       @map("last_error")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([sucursalId])
+  @@index([entityType, entityId])
+  @@map("sync_jobs")
+}
+
+// ============================================================================
+//  FACTURACION ELECTRONICA (Hacienda, Costa Rica)
+// ============================================================================
+
+// Estado del comprobante electronico ante Hacienda. El flujo normal es
+// PENDIENTE -> ENVIADO -> ACEPTADO (o RECHAZADO). ERROR cubre fallos de
+// comunicacion/firma que impiden siquiera enviar el documento.
+enum InvoiceStatus {
+  PENDIENTE
+  ENVIADO
+  ACEPTADO
+  RECHAZADO
+  ERROR
+}
+
+// Comprobante electronico asociado a una venta. Alcance actual: solo
+// Tiquete Electronico (ver invoicing.numbering.ts/invoicing.xml.builder.ts);
+// el campo `xmlFirmado` y `respuestaHacienda` quedan preparados para los
+// bloques futuros de firma digital y envio (todavia sin implementar), no
+// se completan en este bloque.
+model Invoice {
+  id                String        @id @default(uuid()) @db.Uuid
+  saleId            String        @unique @map("sale_id") @db.Uuid
+  clave             String        @unique @db.Char(50)
+  consecutivo       String        @db.Char(20)
+  xml               String        @db.Text
+  xmlFirmado        String?       @map("xml_firmado") @db.Text
+  respuestaHacienda String?       @map("respuesta_hacienda") @db.Text
+  status            InvoiceStatus @default(PENDIENTE)
+  fechaEmision      DateTime      @map("fecha_emision")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  sale Sale @relation(fields: [saleId], references: [id])
+
+  @@index([status])
+  @@map("invoices")
+}
+
+// ============================================================================
+//  CATALOGO CABYS (Version 1.1, asistente inteligente de codigos CABYS)
+//  Catalogo oficial de Hacienda (Costa Rica) de codigos CABYS +
+//  descripcion. Se carga UNICAMENTE mediante el script de importacion
+//  reutilizable (`prisma/import-cabys.ts`) — el archivo oficial de Hacienda
+//  nunca forma parte del codigo fuente, es solo el insumo transitorio de
+//  ese proceso. `code` es la clave natural (13 digitos), unica a nivel de
+//  base de datos. Los codigos retirados en una version posterior del
+//  catalogo oficial NUNCA se borran fisicamente (productos existentes
+//  pueden referenciarlos por su valor en `Product.cabysCode`, que sigue
+//  siendo un `String?` simple, sin FK — ver Bloque 7.12): se marcan
+//  `active: false` mediante el mismo proceso de importacion. Indice de
+//  trigramas sobre `description` ya incluido para que un futuro buscador
+//  (asistente CABYS en `ProductForm.tsx`) pueda reutilizar esta tabla sin
+//  ningun cambio estructural.
+//
+//  taxIndicator (Bloque de extension de importacion CABYS, previo a la
+//  auditoria de riesgos criticos antes de V1): valor CRUDO de la columna
+//  oficial "Impuesto" del catalogo del BCCR, tal como llega en el
+//  archivo — SIN normalizar ni interpretar. Confirmado abriendo el
+//  `.xlsx` real completo (20 507 filas de datos): la columna mezcla,
+//  para distintas filas, numeros decimales (0.01, 0.02, 0.04, 0.13) y
+//  texto ("Exento", "1%", "13%", "na") — no es un campo homogeneo en la
+//  fuente oficial, por lo que se persiste como texto exactamente como
+//  aparece, sin inventar aqui ninguna regla de conversion. Nullable: el
+//  formato CSV simple (codigo/descripcion, uso manual/offline, ver
+//  `import-cabys.ts`) no trae esta columna. Este campo es solo
+//  almacenamiento — ninguna validacion ni regla de negocio lo consume
+//  todavia (queda para un bloque posterior, con autorizacion explicita).
+model CabysCode {
+  code         String   @id @db.Char(13)
+  description  String
+  taxIndicator String?  @map("tax_indicator")
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([active])
+  @@index([description(ops: raw("gin_trgm_ops"))], type: Gin, map: "cabys_codes_description_trgm_idx")
+  @@map("cabys_codes")
+}
+
+// Bloque "Actualizacion inteligente del catalogo CABYS": estado GLOBAL de la
+// ultima sincronizacion contra el archivo oficial del BCCR — fila unica
+// (patron singleton, mismo criterio ya usado por `AlegraConfig`), nunca
+// por sucursal (analizado: `Configuration` es per-sucursal y no encaja
+// aqui; no existia ninguna tabla de configuracion global reutilizable, ver
+// analisis aprobado). `lastEtag`/`lastModified` son la heuristica de
+// deteccion de version (no hay contrato oficial documentado por el BCCR,
+// solo cabeceras HTTP de la infraestructura SharePoint que sirve el
+// archivo — ver `catalogImport.ts::checkRemoteCatalogVersion`). Este
+// modelo SOLO guarda el estado actual del catalogo, nunca el historial de
+// cambios: el evento de cada actualizacion aplicada se registra aparte en
+// `AuditLog` (`entity: "CabysCatalogSync"`).
+model CabysCatalogSync {
+  id           String    @id @default("singleton")
+  lastEtag     String?   @map("last_etag")
+  lastModified String?   @map("last_modified")
+  lastSyncedAt DateTime? @map("last_synced_at")
+  recordCount  Int?      @map("record_count")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@map("cabys_catalog_sync")
+}

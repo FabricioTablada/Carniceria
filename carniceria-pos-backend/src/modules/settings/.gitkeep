@@ -1,0 +1,7 @@
+# Modulo: settings
+# Responsabilidad: Configuracion general: datos de la empresa, moneda CRC, sucursal.
+#
+# Estructura esperada (patron estandar, ver ARCHITECTURE.md seccion 4):
+#   settings.routes.ts / settings.controller.ts / settings.service.ts / settings.repository.ts / settings.validation.ts / index.ts
+#
+# Pendiente de implementar.

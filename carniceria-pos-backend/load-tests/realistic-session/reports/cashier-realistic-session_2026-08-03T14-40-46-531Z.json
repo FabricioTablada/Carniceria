@@ -1,0 +1,120 @@
+{
+  "meta": {
+    "seed": 1785768046208,
+    "baseUrl": "http://localhost:3002/api/v1",
+    "startedAt": "2026-08-03T14:40:46.531Z",
+    "finishedAt": "2026-08-03T14:52:46.578Z",
+    "totalDurationMs": 720047,
+    "totalDurationMin": 12.000783333333333,
+    "requestTimeoutMs": 10000
+  },
+  "summary": {
+    "ventasRealizadas": 39,
+    "ventasFallidas": 0,
+    "consultasRealizadas": 634,
+    "operacionesTotales": 673,
+    "tiempoPromedioPorOperacionMs": 17.963394947994296,
+    "tiempoP95PorOperacionMs": 33.309700000012526,
+    "tiempoPromedioPorVentaMs": 25.987561538461588,
+    "tiempoP95PorVentaMs": 44.62489999999525
+  },
+  "operacionesPorModulo": {
+    "products": {
+      "count": 151,
+      "errors": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 16.21974238410104,
+      "p95Ms": 27.386900000012247
+    },
+    "reports": {
+      "count": 36,
+      "errors": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 17.96927222222866,
+      "p95Ms": 34.08999999999651
+    },
+    "salesQuote": {
+      "count": 229,
+      "errors": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 19.42455807860327,
+      "p95Ms": 32.18349999998463
+    },
+    "sales": {
+      "count": 69,
+      "errors": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 25.59521014492935,
+      "p95Ms": 44.62489999999525
+    },
+    "dashboard": {
+      "count": 175,
+      "errors": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 14.375324571430953,
+      "p95Ms": 25.89069999998901
+    },
+    "cash": {
+      "count": 13,
+      "errors": 0,
+      "rateLimited": 0,
+      "serverErrors": 0,
+      "timeouts": 0,
+      "avgMs": 20.254984615383226,
+      "p95Ms": 37.97330000001239
+    }
+  },
+  "operacionesPorAccion": {
+    "searchProduct": 113,
+    "viewReports:/reports/waste": 6,
+    "quoteAfterAddToCart": 114,
+    "quoteAfterChangeQuantity": 38,
+    "quoteBeforeConfirm": 39,
+    "confirmSale": 39,
+    "viewSalesHistory": 30,
+    "backToPos": 38,
+    "requestQuote": 29,
+    "dashboard:/reports/dashboard": 35,
+    "dashboard:/reports/sales-by-date": 35,
+    "dashboard:/reports/sales-by-category": 35,
+    "dashboard:/reports/low-stock": 35,
+    "dashboard:/notifications": 35,
+    "viewReports:/reports/sales-by-cashier": 3,
+    "cashMovement": 13,
+    "viewReports:/reports/profit": 2,
+    "viewReports:/reports/purchases": 7,
+    "viewReports:/reports/inventory": 9,
+    "viewReports:/reports/cash": 5,
+    "quoteAfterRemoveFromCart": 9,
+    "viewReports:/reports/top-products": 4
+  },
+  "statusHttpTally": {
+    "200": 621,
+    "201": 52
+  },
+  "errores": {
+    "totalErroresCliente4xx": 0,
+    "totalRateLimited429": 0,
+    "totalErroresServidor5xx": 0,
+    "totalTimeouts": 0,
+    "totalErroresRed": 0,
+    "detalleServidor5xx": [],
+    "detalleTimeouts": [],
+    "detalleRateLimited": []
+  },
+  "recomendaciones": [
+    "Cero respuestas 429 durante toda la sesión — el Rate Limiter no interfirió con un patrón de uso real de un único cajero.",
+    "Cero errores 5xx del backend durante toda la sesión.",
+    "Cero timeouts (> 10000ms) durante toda la sesión."
+  ]
+}

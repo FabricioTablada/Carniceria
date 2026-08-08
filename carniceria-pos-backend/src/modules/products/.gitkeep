@@ -1,0 +1,7 @@
+# Modulo: products
+# Responsabilidad: Productos: unidad (kg/unidad), precio por kg, codigo de barras, peso variable de balanza.
+#
+# Estructura esperada (patron estandar, ver ARCHITECTURE.md seccion 4):
+#   products.routes.ts / products.controller.ts / products.service.ts / products.repository.ts / products.validation.ts / index.ts
+#
+# Pendiente de implementar.

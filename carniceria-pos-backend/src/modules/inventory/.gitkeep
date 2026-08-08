@@ -1,0 +1,7 @@
+# Modulo: inventory
+# Responsabilidad: Inventario y movimientos de inventario (mismo agregado).
+#
+# Estructura esperada (patron estandar, ver ARCHITECTURE.md seccion 4):
+#   inventory.routes.ts / inventory.controller.ts / inventory.service.ts / inventory.repository.ts / inventory.validation.ts / index.ts
+#
+# Pendiente de implementar.

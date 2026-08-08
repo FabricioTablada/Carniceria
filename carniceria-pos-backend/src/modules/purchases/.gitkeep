@@ -1,0 +1,7 @@
+# Modulo: purchases
+# Responsabilidad: Compras: compra + detalle de compra.
+#
+# Estructura esperada (patron estandar, ver ARCHITECTURE.md seccion 4):
+#   purchases.routes.ts / purchases.controller.ts / purchases.service.ts / purchases.repository.ts / purchases.validation.ts / index.ts
+#
+# Pendiente de implementar.

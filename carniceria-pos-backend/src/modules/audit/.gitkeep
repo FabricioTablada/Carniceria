@@ -1,0 +1,7 @@
+# Modulo: audit
+# Responsabilidad: Auditoria (lado de lectura). La escritura es transversal (shared/services/audit.service).
+#
+# Estructura esperada (patron estandar, ver ARCHITECTURE.md seccion 4):
+#   audit.routes.ts / audit.controller.ts / audit.service.ts / audit.repository.ts / audit.validation.ts / index.ts
+#
+# Pendiente de implementar.
